@@ -266,7 +266,7 @@ class AARTPipeline(GenericPipeline):
         print(embd_type_cnt)
 
         train_labels_list = (
-            train_df.drop_duplicates(self.instance_id_col)["majority_label"]
+            train_df.label.unique()
             .astype(int)
             .tolist()
         )
