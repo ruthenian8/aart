@@ -10,6 +10,17 @@ def load_compute_metrics(pipeline_obj):
         return _compute_metrics_aart
     elif 'MultiTask' in str(type(pipeline_obj)):
         return _compute_metrics_multi_task
+    elif '' in str(type(pipeline_obj)):
+        return _compute_metrics_single_task
+
+
+def _compute_metrics_single_task(eval_pred):
+    logits, labels = eval_pred
+    maj_preds = np.argmax(logits, axis=-1)
+    assert labels.shape == maj_preds.shape
+
+    metric_res["accuracy"], metric_res["precision"], metric_res["recall"], metric_res["f1"] = get_a_p_r_f(labels=labels, preds=maj_preds)
+    return metric_res
 
 
 def _compute_metrics_aart(eval_pred):
