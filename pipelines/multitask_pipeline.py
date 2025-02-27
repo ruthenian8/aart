@@ -95,9 +95,8 @@ class MultiTaskPipeline(GenericPipeline):
             # else:
             #     # each label weight is calculated separately
             #     labels = data[task_label].dropna().values.astype(int)
-
-            weight = compute_class_weight(
-                class_weight="balanced", classes=np.unique(labels), y=labels)
+            weight = np.ones(28)
+            # weight = compute_class_weight(class_weight="balanced", classes=np.unique(labels), y=labels)
             if len(weight) == 1:
                 # if a label does not appear in the data
                 weight = [0.5, 0.5]
@@ -105,7 +104,7 @@ class MultiTaskPipeline(GenericPipeline):
             class_weights[task_label] = weight
         return class_weights
 
-    def _new_model(self, train_df, language_model):
+    def _new_model(self, train_df):
         if self.params.approach == "single":
             self.task_labels = ["majority_label"]
         elif self.params.approach == "multi_task":
@@ -113,10 +112,11 @@ class MultiTaskPipeline(GenericPipeline):
 
         class_weights = self._create_loss_weights(train_df)
         classifier = MultiTaskClassifier.from_pretrained(
-            pretrained_model_name_or_path=language_model,
+            pretrained_model_name_or_path=self.params.language_model_name,
             balancing_weights=class_weights,
+            num_labels=self.params.num_classes,
             task_labels=self.task_labels,
-        )  # .to(self.device)
+        )
         return classifier
 
     def get_batches(self, df):
