@@ -10,7 +10,7 @@ def load_compute_metrics(pipeline_obj):
         return _compute_metrics_aart
     elif 'MultiTask' in str(type(pipeline_obj)):
         return _compute_metrics_multi_task
-    elif '' in str(type(pipeline_obj)):
+    elif 'SingleTask' in str(type(pipeline_obj)):
         return _compute_metrics_single_task
 
 
