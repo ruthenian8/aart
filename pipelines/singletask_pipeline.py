@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from pipelines.generic_pipeline import GenericPipeline
 from model_architectures import MultiTaskClassifier
+from transformers import RobertaForSequenceClassification
 from sklearn.utils.class_weight import compute_class_weight
 from utils import get_a_p_r_f
 
