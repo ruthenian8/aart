@@ -9,7 +9,8 @@ from utils import get_a_p_r_f
 
 class SingleTaskRoberta(RobertaForSequenceClassification):
     def forward(self, *args, **kwargs):
-        kwargs.pop("num_items_in_batch")
+        if "num_items_in_batch" in kwargs:
+            kwargs.pop("num_items_in_batch")
         # kwargs["labels"] = kwargs.pop("majority_label")
         return super().forward(*args, **kwargs)
 
