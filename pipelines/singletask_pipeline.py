@@ -9,7 +9,8 @@ from utils import get_a_p_r_f
 
 class SingleTaskRoberta(RobertaForSequenceClassification):
     def forward(self, *args, **kwargs):
-        kwargs.pop("majority_label")
+        kwargs.pop("num_items_in_batch")
+        # kwargs["labels"] = kwargs.pop("majority_label")
         return super().forward(*args, **kwargs)
 
 
@@ -99,7 +100,7 @@ class SingleTaskPipeline(GenericPipeline):
 
     def _new_model(self, train_df):
         if self.params.approach == "single":
-            self.task_labels = ["majority_label"]
+            self.task_labels = ["labels"]
         elif self.params.approach == "multi_task":
             self.task_labels = self.get_annotators(train_df)
 
@@ -113,7 +114,7 @@ class SingleTaskPipeline(GenericPipeline):
         from datasets import Dataset
         # replacing the unavailable labels with -1
         # -1 will then be masked when calculating the loss in the multi_task_loss function
-        d = {t: df[t].replace(np.nan, -1).astype(int) for t in self.task_labels}
+        d = {t: df["majority_label"].replace(np.nan, -1).astype(int) for t in self.task_labels}
 
         d["text"] = df.prep_text.squeeze().astype(str)
         # d[self.instance_id_col] = df[self.instance_id_col].squeeze()
