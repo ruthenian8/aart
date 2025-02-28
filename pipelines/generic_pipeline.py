@@ -278,8 +278,8 @@ class GenericPipeline():
             'avg_disagreement_preds'] = self.calculate_disagreement(df=dev)
 
         scores_dict['rand_seed'] = self.params.random_state
-        scores_dict['early_stop_epoch'] = float(trainer.state.best_model_checkpoint.split("-")[-1]) / epoch_steps
-        print("Early Stop Epoch: ", scores_dict['early_stop_epoch'])
+        # scores_dict['early_stop_epoch'] = float(trainer.state.best_model_checkpoint.split("-")[-1]) / epoch_steps
+        # print("Early Stop Epoch: ", scores_dict['early_stop_epoch'])
         print(scores_dict)
         # scores_dict = {k:v.replace("test", "dev") for k,v in scores_dict.items()}
         scores.append(scores_dict)
@@ -405,7 +405,7 @@ class GenericPipeline():
         test, scores[-1]['corr_disagreement'], scores[-1]['avg_disagreement_labels'], scores[-1][
             'avg_disagreement_preds'] = self.calculate_disagreement(test)
         epoch_steps = int(train.shape[0] / self.params.batch_size)
-        scores[-1]['early_stop_epoch'] = float(trainer.state.best_model_checkpoint.split("-")[-1]) / epoch_steps
+        # scores[-1]['early_stop_epoch'] = float(trainer.state.best_model_checkpoint.split("-")[-1]) / epoch_steps
         print("~~~~~ Test Masked Preds (individually):")
         print(scores[-1])
 
