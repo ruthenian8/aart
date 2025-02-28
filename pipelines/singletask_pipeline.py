@@ -7,6 +7,11 @@ from transformers import RobertaForSequenceClassification
 from sklearn.utils.class_weight import compute_class_weight
 from utils import get_a_p_r_f
 
+class SingleTaskRoberta(RobertaForSequenceClassification):
+    def forward(self, *args, **kwargs):
+        kwargs.pop("majority_label")
+        return super().forward(*args, **kwargs)
+
 
 class SingleTaskPipeline(GenericPipeline):
 
@@ -98,7 +103,7 @@ class SingleTaskPipeline(GenericPipeline):
         elif self.params.approach == "multi_task":
             self.task_labels = self.get_annotators(train_df)
 
-        classifier = RobertaForSequenceClassification.from_pretrained(
+        classifier = SingleTaskRoberta.from_pretrained(
             pretrained_model_name_or_path=self.params.language_model_name,
             num_labels=self.params.num_classes,
         )
