@@ -74,7 +74,7 @@ class SingleTaskPipeline(GenericPipeline):
     def add_predictions(self, df, preds):
         annotators = self.get_annotators(df)
         pred_cols = {}
-        df['majority_pred'] = pd.Series(np.argmax(preds.predictions['majority_label'], axis=-1))
+        df['majority_pred'] = pd.Series(np.argmax(preds.predictions, axis=-1))
         return df.copy()
 
     def _create_loss_weights(self, data):
