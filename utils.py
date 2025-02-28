@@ -16,6 +16,7 @@ def load_compute_metrics(pipeline_obj):
 
 def _compute_metrics_single_task(eval_pred):
     logits, labels = eval_pred
+    metric_res = {}
     maj_preds = np.argmax(logits, axis=-1)
     assert labels.shape == maj_preds.shape
 
