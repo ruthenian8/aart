@@ -4,6 +4,7 @@ import pytz
 import numpy as np
 from pipelines.multitask_pipeline import MultiTaskPipeline
 from pipelines.aart_pipeline import AARTPipeline
+from pipelines.singletask_pipeline import SingleTaskPipeline
 
 
 def parse_args():
@@ -112,8 +113,10 @@ def parse_args():
 
 
 def get_pipeline(params):
-    if params.approach == "multi_task" or params.approach == "single":
+    if params.approach == "multi_task":
         return MultiTaskPipeline(params)
+    elif params.approach == "single":
+        return SingleTaskPipeline(params)
     elif params.approach == "aart":
         return AARTPipeline(params)
 
