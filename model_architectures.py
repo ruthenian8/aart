@@ -20,6 +20,7 @@ class MultiTaskClassifier(RobertaForSequenceClassification):
 
         self.task_labels = task_labels
         self.linear_layer = dict()
+        self.relu = nn.ReLU()
         for task in task_labels:
             self.linear_layer[task] = nn.Linear(nhid, self.num_labels).to(torch.device('cuda'))
         self.balancing_weights = balancing_weights
@@ -67,7 +68,7 @@ class MultiTaskClassifier(RobertaForSequenceClassification):
 
         logits = dict()
         for task in self.task_labels:
-            logits[task] = self.linear_layer[task](hidden)
+            logits[task] = self.relu(self.linear_layer[task](hidden))
 
         # predictions = {task: [x.item() for x in torch.argmax(logits[task], dim=-1)] for task in self.task_labels}
         labels = {k: kwargs[k] for k in kwargs.keys() if k in self.task_labels}
@@ -135,6 +136,7 @@ class AARTClassifier(RobertaForSequenceClassification):
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(nhid, config.num_labels)
+        self.relu = nn.ReLU()
         self.label_balancing_weights = label_weights
         if not embd_type_cnt:
             self.annotator_balancing_weights = []
@@ -216,8 +218,9 @@ class AARTClassifier(RobertaForSequenceClassification):
         batch_embeddings = self.LayerNorm(batch_embeddings)
         # batch_embeddings = self.dropout(batch_embeddings)
         logits = self.classifier(batch_embeddings)
+        relued_logits = self.relu(logits)
         
-        classification_loss, l2_norm, contrastive_loss = self.calculate_loss(logits=logits, labels=labels,
+        classification_loss, l2_norm, contrastive_loss = self.calculate_loss(logits=relued_logits, labels=labels,
                                                                                  text_ids=kwargs['text_ids'],
                                                                                  other_args=kwargs)
 
