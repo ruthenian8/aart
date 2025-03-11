@@ -422,12 +422,12 @@ class GenericPipeline():
 
     def tokenize_function(self, x):
         if self.instance_id_col == "pair_id":
-            if (x["text"], x["parent_text"]) in self.tokenizations:
-                return self.tokenizations[(x["text"], x["parent_text"])]
+            if (x["parent_text"], x["text"]) in self.tokenizations:
+                return self.tokenizations[(x["parent_text"], x["text"])]
 
-            tokenized_inputs = self.tokenizer(text=x["text"], text_pair=x["parent_text"], padding="max_length",
+            tokenized_inputs = self.tokenizer(text=x["parent_text"], text_pair=x["text"], padding="max_length",
                                               truncation=True, max_length=self.params.max_len)
-            self.tokenizations[(x["text"], x["parent_text"])] = tokenized_inputs
+            self.tokenizations[(x["parent_text"], x["text"])] = tokenized_inputs
         else:
             if x["text"] in self.tokenizations:
                 return self.tokenizations[x["text"]]
