@@ -42,7 +42,7 @@ python main.py --data_name my_dataset --approach aart
 ```
 
 - `--data_name`: A custom name for your dataset.
-- `--approach`: Choose from `"single"`, `"multi_task"`, or `"aart"`.
+- `--approach`: Choose from `"single"`, `"multi_task"`, or `"aart"`, or `"hpm"`.
 
 ---
 
@@ -56,7 +56,7 @@ The dataset should be stored under:
 
 where:
 `APPROACH` and `DATA_NAME` are both provided as input arguments. 
-- `APPROACH` corresponds to the selected method (`single`, `multi_task`, or `aart`).
+- `APPROACH` corresponds to the selected method (`single`, `multi_task`, or `aart` or `hpm`).
 - `DATA_NAME` is a user-defined dataset name.
 
 ### Expected Columns

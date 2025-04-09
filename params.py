@@ -1,6 +1,6 @@
 class params:
     def __init__(self):
-        self.num_classes = 28
+        self.num_classes = 2
         self.data_name = None
         self.language_model_name = "roberta-base"
         self.batch_size = 16

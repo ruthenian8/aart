@@ -198,34 +198,6 @@ class GenericPipeline:
             or data_dict["test"].empty
         )
 
-        assert (
-            len(
-                set(self.get_annotators(data_dict["test"]))
-                - set(self.get_annotators(data_dict["train"]))
-            )
-            == 0
-        )  # < 5
-        assert (
-            len(
-                set(self.get_annotators(data_dict["dev"]))
-                - set(self.get_annotators(data_dict["train"]))
-            )
-            == 0
-        )  # < 5
-
-        assert (len(df_annotators) + 2 * self.params.num_fake_annotators) == len(
-            self.get_annotators(data_dict["train"])
-        ), f"num of annotators in train set must be {(len(df_annotators) + 2 * self.params.num_fake_annotators)}"
-        print("Count of annotators in all-data: ", len(df_annotators))
-        print(
-            "Count of annotators in train:",
-            len(self.get_annotators(data_dict["train"])),
-        )
-        print("Count of annotators in dev:", len(self.get_annotators(data_dict["dev"])))
-        print(
-            "Count of annotators in test:", len(self.get_annotators(data_dict["test"]))
-        )
-
         print(f"Approach name is {self.params.approach}")
         return data_dict
 

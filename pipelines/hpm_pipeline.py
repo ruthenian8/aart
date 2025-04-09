@@ -24,34 +24,6 @@ class HPMPipeline(GenericPipeline):
         ]
         return disagreements
 
-    def add_fake_annotators(self, df):
-        N = self.params.num_fake_annotators
-        if N <= 0:
-            return df
-        df_annotators = self.get_annotators(df)
-
-        for i in range(N):
-            for type in ["maj", "opp"]:
-                fake_ann_name = f"annotator_fake_{type}_{i}"
-                assert fake_ann_name not in df_annotators
-                print(f"*** Adding {fake_ann_name}")
-                tmp_df = df.drop_duplicates(self.instance_id_col).copy()
-                tmp_df = tmp_df.sample(
-                    frac=1 / N, random_state=self.params.random_state
-                )
-                tmp_df["annotator"] = fake_ann_name
-                # todo this should change for multi class
-                tmp_df["label"] = np.abs(
-                    tmp_df["majority_label"]
-                    - np.random.choice([0, 1], size=tmp_df.shape[0], p=[0.9, 0.1])
-                )
-                if type == "opp":
-                    tmp_df["label"] = 1 - tmp_df["label"]
-
-                df = pd.concat([df, tmp_df], axis=0, ignore_index=True)
-
-        return df.copy()
-
     def calculate_majority(self, df, annotators=None):
         t = df.groupby(self.instance_id_col)["label"].agg(pd.Series.mode)
         aggregated_labels = t[df[self.instance_id_col]].tolist()

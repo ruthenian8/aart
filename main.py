@@ -30,7 +30,7 @@ def parse_args():
         default=None,
         type=str,
         required=True,
-        choices=["single", "multi_task", "aart"],
+        choices=["single", "multi_task", "aart", "hpm"],
         help="The name of the model to be trained from the list: single, multi_task, summing_embs.",
     )
 
