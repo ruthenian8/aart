@@ -329,7 +329,7 @@ class AARTPipeline(GenericPipeline):
         all_texts_all_annots = pd.merge(
             all_texts_df.assign(key=1), all_annotators_df.assign(key=1), on="key"
         ).drop("key", axis=1)
-        all_texts_all_annots["label"] = np.NAN
+        all_texts_all_annots["label"] = np.nan
 
         print("df shape before appending the missing annotators: ", df.shape)
         result_df = pd.concat([df, all_texts_all_annots], axis=0, ignore_index=True)

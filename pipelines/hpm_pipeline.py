@@ -129,11 +129,7 @@ class HPMPipeline(GenericPipeline):
     def _new_model(self, train_df):
         self.task_labels = None
         embd_type_cnt = {}
-        for emb_col in self.params.embedding_colnames:
-            assert train_df[emb_col].notnull().all()
-            print(
-                f"will make {train_df[emb_col].nunique()} embeddings for unique values of {emb_col}: {train_df[emb_col].unique()}"
-            )
+        for emb_col in ["annotator"]:
             embd_type_cnt[emb_col] = train_df[emb_col].nunique()
         print(embd_type_cnt)
 
@@ -184,7 +180,7 @@ class HPMPipeline(GenericPipeline):
         all_texts_all_annots = pd.merge(
             all_texts_df.assign(key=1), all_annotators_df.assign(key=1), on="key"
         ).drop("key", axis=1)
-        all_texts_all_annots["label"] = np.NAN
+        all_texts_all_annots["label"] = np.nan
 
         print("df shape before appending the missing annotators: ", df.shape)
         result_df = pd.concat([df, all_texts_all_annots], axis=0, ignore_index=True)

@@ -12,9 +12,12 @@ def load_compute_metrics(pipeline_obj):
         return _compute_metrics_multi_task
     elif "SingleTask" in str(type(pipeline_obj)):
         return _compute_metrics_single_task
+    elif "HPM" in str(type(pipeline_obj)):
+        return _compute_metrics_single_task
 
 
 def _compute_metrics_single_task(eval_pred):
+    print(eval_pred)
     logits, labels = eval_pred
     metric_res = {}
     maj_preds = np.argmax(logits, axis=-1)
@@ -26,6 +29,7 @@ def _compute_metrics_single_task(eval_pred):
         metric_res["recall"],
         metric_res["f1"],
     ) = get_a_p_r_f(labels=labels, preds=maj_preds)
+    print(metric_res)
     return metric_res
 
 

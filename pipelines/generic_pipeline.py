@@ -434,7 +434,7 @@ class GenericPipeline:
 
     def get_trainingargs(self, num_save_eval_log_steps, saving_models_dir):
         metric_for_best_model = (
-            "eval_f1" if self.params.approach == "single" else "eval_macro_f1"
+            "eval_f1" if self.params.approach in ["single", "hpm"] else "eval_macro_f1"
         )
         # metric_for_best_model = "eval_loss"
         training_args = {

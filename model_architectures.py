@@ -134,7 +134,12 @@ class HyperPeftModel(PeftModel):
                 module.weight = nn.Parameter(base_weight + delta_weight)
 
         # Pass through the base model with the remaining standard inputs.
-        outputs = self.base_model(*args, **kwargs)
+        new_kwargs = {
+            "input_ids": kwargs['input_ids'],
+            "attention_mask": kwargs['attention_mask'],
+            "labels": kwargs['labels'],
+        }
+        outputs = self.base_model(*args, **new_kwargs)
         # If the output is not already a dictionary, wrap it; Trainer API expects a dict.
         if not isinstance(outputs, dict):
             outputs = {"logits": outputs}
