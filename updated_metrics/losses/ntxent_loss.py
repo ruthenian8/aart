@@ -12,7 +12,7 @@ class NTXentLoss(GenericPairLoss):
         self.add_to_recordable_attributes(list_of_names=["temperature"], is_stat=False)
 
     def _compute_loss(self, pos_pairs, neg_pairs, indices_tuple):
-        a1, p, a2, _ = indices_tuple # todo why there is
+        a1, p, a2, _ = indices_tuple  # todo why there is
 
         if len(a1) > 0 and len(a2) > 0:
             dtype = neg_pairs.dtype
@@ -27,17 +27,20 @@ class NTXentLoss(GenericPairLoss):
 
             neg_pairs = neg_pairs * n_per_p
             neg_pairs[n_per_p == 0] = c_f.neg_inf(dtype)
-            import pdb;
+            import pdb
+
             pdb.set_trace()
 
             max_val = torch.max(
                 pos_pairs, torch.max(neg_pairs, dim=1, keepdim=True)[0]
             ).detach()
-            import pdb;
+            import pdb
+
             pdb.set_trace()
             numerator = torch.exp(pos_pairs - max_val).squeeze(1)
             denominator = torch.sum(torch.exp(neg_pairs - max_val), dim=1) + numerator
-            import pdb;
+            import pdb
+
             pdb.set_trace()
             log_exp = torch.log((numerator / denominator) + c_f.small_val(dtype))
             return {

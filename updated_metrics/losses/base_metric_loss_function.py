@@ -15,7 +15,13 @@ class BaseMetricLossFunction(
     #     raise NotImplementedError
 
     def forward(
-        self, embeddings, labels=None, indices_tuple=None, ref_emb=None, ref_labels=None, mask_labels=None
+        self,
+        embeddings,
+        labels=None,
+        indices_tuple=None,
+        ref_emb=None,
+        ref_labels=None,
+        mask_labels=None,
     ):
         """
         Args:
@@ -32,7 +38,12 @@ class BaseMetricLossFunction(
             labels = c_f.to_device(labels, embeddings)
         ref_emb, ref_labels = c_f.set_ref_emb(embeddings, labels, ref_emb, ref_labels)
         loss_dict = self.compute_loss(
-            embeddings, labels, indices_tuple, ref_emb, ref_labels, mask_labels=mask_labels
+            embeddings,
+            labels,
+            indices_tuple,
+            ref_emb,
+            ref_labels,
+            mask_labels=mask_labels,
         )
         self.add_embedding_regularization_to_loss_dict(loss_dict, embeddings)
         return self.reducer(loss_dict, embeddings, labels)

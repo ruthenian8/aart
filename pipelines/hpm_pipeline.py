@@ -3,118 +3,12 @@ import numpy as np
 import pandas as pd
 from transformers import Trainer
 from pipelines.generic_pipeline import GenericPipeline
-from model_architectures import AARTClassifier
+from model_architectures import HyperPeftModel
 from sklearn.utils.class_weight import compute_class_weight
-
-from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
 from utils import get_a_p_r_f
 
 
-class AARTTrainer(Trainer):
-
-    def get_train_dataloader(self) -> DataLoader:
-        if self.train_dataset is None:
-            raise ValueError("Trainer: training requires a train_dataset.")
-
-        train_dataset = self.train_dataset
-        data_collator = self.data_collator
-
-        # if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
-        #     train_dataset = self._remove_unused_columns(train_dataset, description="training")
-        # else:
-        #     data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
-        return DataLoader(
-            train_dataset,
-            batch_size=self._train_batch_size,
-            shuffle=self.args.shuffle_train_data,
-            collate_fn=data_collator,
-        )  # , num_workers=4)
-
-    def compute_loss(
-        self, model, inputs, return_outputs=False, num_items_in_batch=None
-    ):
-        """
-        How the loss is computed by Trainer. By default, all models return the loss in the first element.
-
-        Subclass and override for custom behavior.
-        """
-        if (
-            self.label_smoother is not None or self.compute_loss_func is not None
-        ) and "labels" in inputs:
-            raise ValueError(f"Unhandled case")
-            labels = inputs.pop("labels")
-        else:
-            labels = None
-
-        if self.model_accepts_loss_kwargs:
-            loss_kwargs = {}
-            if num_items_in_batch is not None:
-                loss_kwargs["num_items_in_batch"] = num_items_in_batch
-            inputs = {**inputs, **loss_kwargs}
-
-        outputs = model(**inputs)
-        # Save past state if it exists
-        if self.args.past_index >= 0:
-            raise ValueError(f"Unhandled case")
-            self._past = outputs[self.args.past_index]
-
-        if labels is not None:
-            raise ValueError(f"Unhandled case")
-            unwrapped_model = self.accelerator.unwrap_model(model)
-            if _is_peft_model(unwrapped_model):
-                model_name = unwrapped_model.base_model.model._get_name()
-            else:
-                model_name = unwrapped_model._get_name()
-            # User-defined compute_loss function
-            if self.compute_loss_func is not None:
-                loss = self.compute_loss_func(
-                    outputs, labels, num_items_in_batch=num_items_in_batch
-                )
-            elif model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
-                loss = self.label_smoother(outputs, labels, shift_labels=True)
-            else:
-                loss = self.label_smoother(outputs, labels)
-        else:
-            loss = (
-                self.args.lambda2 * outputs["l2_norm"]
-                + self.args.contrastive_alpha * outputs["contrastive_loss"]
-                + (1 - self.args.lambda2 - self.args.contrastive_alpha)
-                * outputs["ce_loss"]
-            )
-
-            if self.state.global_step % 300 == 0:
-                # if self.control.should_evaluate:
-                print(
-                    f"step {self.state.global_step}, lambda: {self.args.lambda2}, contrastive_alpha: {self.args.contrastive_alpha},"
-                    f"\ncurrent l2_norm: {outputs.l2_norm}, \ncurrent ce_loss: {outputs.ce_loss}, \ncurrent contrastive_loss: {outputs.contrastive_loss}"
-                )
-
-        if self.args.average_tokens_across_devices and self.model_accepts_loss_kwargs:
-            raise ValueError(f"Unhandled case")
-            loss *= self.accelerator.num_processes
-
-        return (loss, outputs) if return_outputs else loss
-
-
-class AARTPipeline(GenericPipeline):
-
-    def print_embs_info(self, model):
-        for k in self.params.embedding_colnames:  # or model.emb_names
-            print("~" * 30)
-            print(k)
-            print(f"L1 of {k} embeddings:")
-            print(
-                torch.norm(
-                    getattr(model, f"{k}_embeddings").weight.detach(), p=1, dim=1
-                ).mean()
-            )
-            # print(self.data_dict[f"{k}_map"])
-            print(
-                torch.norm(
-                    getattr(model, f"{k}_embeddings").weight.detach(), p=1, dim=1
-                )
-            )
-
+class HPMPipeline(GenericPipeline):
     def calculate_continous_disagreements(self, df, label_or_pred_col="label"):
         majority = df.groupby(self.instance_id_col)[label_or_pred_col].mean() >= 0.5
         count = df.groupby(self.instance_id_col)[label_or_pred_col].count()
@@ -274,24 +168,13 @@ class AARTPipeline(GenericPipeline):
         train_labels_list = train_df.label.unique().astype(int).tolist()
         num_labels = len(set(train_labels_list))
 
-        label_weights = self._create_loss_label_weights(train_labels_list)
-
-        train_annotators_list = train_df["annotator_int_encoded"].astype(int).tolist()
-
-        if self.params.balance_annotator_weights:
-            annotator_weights = self._create_loss_annotator_weights(
-                train_annotators_list
-            )
-        else:
-            annotator_weights = []
-
-        classifier = AARTClassifier.from_pretrained(
+        classifier = HyperPeftModel.from_pretrained(
             pretrained_model_name_or_path=self.params.language_model_name,
             num_labels=num_labels,
-            embd_type_cnt=embd_type_cnt,
-            label_weights=label_weights,
-            annotator_weights=annotator_weights,
-        ).to(torch.bfloat16)
+            num_embeddings=embd_type_cnt["annotator"],
+            embedding_dim=256,
+            layer_embedding_dim=256,
+        )
         return classifier
 
     def get_batches(self, df):
@@ -341,37 +224,6 @@ class AARTPipeline(GenericPipeline):
             unique_annotator_int
         )
         return result_df
-
-    def plot_embeddings(self, mat, fig_dir, fig_name):
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-        from sklearn.manifold import TSNE
-        import os
-
-        os.makedirs(fig_dir, exist_ok=True)
-        plt.figure(figsize=(8, 8))
-
-        tsne = TSNE(n_components=2, verbose=1, perplexity=40, n_iter=300)
-        tsne_results = tsne.fit_transform(mat)
-        # df_subset['tsne-2d-one'] = tsne_results[:, 0]
-        # df_subset['tsne-2d-two'] = tsne_results[:, 1]
-        plt.figure(figsize=(16, 10))
-        sns.scatterplot(
-            x=tsne_results[:, 0],
-            y=tsne_results[:, 1],
-            # palette=sns.color_palette("hls", 10),
-            legend="full",
-            alpha=0.7,
-        )
-
-        def label_point(x, y, val, ax):
-            a = pd.DataFrame({"x": x, "y": y, "val": val})
-            for i, point in a.iterrows():
-                ax.text(point["x"] + 0.02, point["y"], str(point["val"]))
-
-        y = [self.data_dict["annotator_map"][i] for i in range(mat.shape[0])]
-        label_point(tsne_results[:, 0], tsne_results[:, 1], y, plt.gca())
-        plt.savefig(f"{fig_dir}/{fig_name}")
 
     def _calculate_majority_performance(self, trainer, test, train):
         import time

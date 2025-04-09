@@ -19,11 +19,15 @@ class GenericPairLoss(BaseMetricLossFunction):
         #   self.distance
         #   CosineSimilarity()
 
-    def compute_loss(self, embeddings, labels, indices_tuple, ref_emb, ref_labels, mask_labels):
+    def compute_loss(
+        self, embeddings, labels, indices_tuple, ref_emb, ref_labels, mask_labels
+    ):
         # import pdb;
         # pdb.set_trace()
         c_f.labels_or_indices_tuple_required(labels, indices_tuple)
-        indices_tuple = lmu.convert_to_pairs(indices_tuple, labels, ref_labels, mask_labels)
+        indices_tuple = lmu.convert_to_pairs(
+            indices_tuple, labels, ref_labels, mask_labels
+        )
         if all(len(x) <= 1 for x in indices_tuple):
             return self.zero_losses()
         mat = self.distance(embeddings, ref_emb)
