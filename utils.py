@@ -13,7 +13,7 @@ def load_compute_metrics(pipeline_obj):
     elif "SingleTask" in str(type(pipeline_obj)):
         return _compute_metrics_single_task
     elif "HPM" in str(type(pipeline_obj)):
-        return _compute_metrics_single_task
+        return _compute_metrics_aart
 
 
 def _compute_metrics_single_task(eval_pred):

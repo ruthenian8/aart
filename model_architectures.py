@@ -143,6 +143,8 @@ class HyperPeftModel(PeftModel):
         # If the output is not already a dictionary, wrap it; Trainer API expects a dict.
         if not isinstance(outputs, dict):
             outputs = {"logits": outputs}
+        
+        outputs["logits"] = torch.cat((kwargs[f"annotator_ids"].reshape(-1, 1), outputs["logits"]), 1)
         return outputs
 
     @classmethod
