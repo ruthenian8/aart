@@ -24,7 +24,7 @@ class HyperPeftModel(PeftModel):
         model: PreTrainedModel,
         peft_config: LoraConfig,
         num_embeddings: int = 256,
-        embedding_dim: int = 128,
+        embedding_dim: int = 768,
         hidden_dim: int = 128,
         num_layer_embeddings: int = 100,
         layer_embedding_dim: int = 128,
@@ -110,7 +110,7 @@ class HyperPeftModel(PeftModel):
         """
         HN_ids: torch.Tensor = kwargs.pop("annotator_ids", None)
         if HN_ids is not None:
-            r = self.peft_config.r
+            r = self.peft_config["default"].r
             batch_size = HN_ids.size(0)
             for module, encoded_layer in self.lora_modules:
                 # Create a tensor for the layer identifier that matches the batch size.
@@ -124,27 +124,27 @@ class HyperPeftModel(PeftModel):
                 b_dim = (
                     self.hypernetwork.fc_B.out_features // r
                 )  # Typically equals embedding_dim.
-                a_matrices = A.view(batch_size, a_dim, r)
+                a_matrices = A.view(batch_size, r, a_dim)
                 b_matrices = B.view(batch_size, b_dim, r)
                 delta_weight = torch.bmm(
                     b_matrices, a_matrices
                 )  # (batch, b_dim, a_dim)
                 base_weight = module.weight.unsqueeze(0).expand(batch_size, -1, -1)
                 # Update the module weight with the delta.
-                module.weight = nn.Parameter(base_weight + delta_weight)
+                module._parameters["weight"] = nn.Parameter(base_weight + delta_weight)
 
         # Pass through the base model with the remaining standard inputs.
         new_kwargs = {
-            "input_ids": kwargs['input_ids'],
-            "attention_mask": kwargs['attention_mask'],
-            "labels": kwargs['labels'],
+            "input_ids": kwargs["input_ids"],
+            "attention_mask": kwargs["attention_mask"],
+            "labels": kwargs["labels"],
         }
         outputs = self.base_model(*args, **new_kwargs)
         # If the output is not already a dictionary, wrap it; Trainer API expects a dict.
         if not isinstance(outputs, dict):
             outputs = {"logits": outputs}
-        
-        outputs["logits"] = torch.cat((kwargs[f"annotator_ids"].reshape(-1, 1), outputs["logits"]), 1)
+
+        outputs["logits"] = torch.cat((HN_ids.reshape(-1, 1), outputs["logits"]), 1)
         return outputs
 
     @classmethod
@@ -188,7 +188,7 @@ class HyperPeftModel(PeftModel):
         # Define LoRA configuration.
         peft_config = LoraConfig(
             task_type="SEQ_CLS",  # Adjust based on your task.
-            inference_mode=False,
+            inference_mode=True,
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,

@@ -65,7 +65,7 @@ class HPMPipeline(GenericPipeline):
         return weights
 
     def add_predictions(self, df, preds):
-        df["pred"] = preds.predictions[0][:, 1:].argmax(axis=1)
+        df["pred"] = preds.predictions[:, 1:].argmax(axis=1)
         return df.copy()
 
     def encode_values(self, train_df, dev_df, test_df):
@@ -79,6 +79,7 @@ class HPMPipeline(GenericPipeline):
 
         label_encoders_dict = {}
         ### integer mapping using LabelEncoder
+        print("Encoding the following columns: ", encoding_colnames)
         for emb_col in encoding_colnames:
             assert f"{emb_col}_int_encoded" not in train_df.columns
             label_encoders_dict[emb_col] = LabelEncoder()
@@ -140,7 +141,7 @@ class HPMPipeline(GenericPipeline):
             pretrained_model_name_or_path=self.params.language_model_name,
             num_labels=num_labels,
             num_embeddings=embd_type_cnt["annotator"],
-            embedding_dim=256,
+            embedding_dim=768,
             layer_embedding_dim=256,
         )
         return classifier
@@ -152,10 +153,7 @@ class HPMPipeline(GenericPipeline):
         ds_dict["labels"] = df["label"].values
         ds_dict["text_ids"] = df[self.instance_id_col].values
         ds_dict["text"] = df.prep_text.astype(str)
-        for colname in df.columns:  # self.params.embedding_colnames:
-            if "_int_encoded" in colname:
-                emb_col = colname.split("_int_encoded")[0]
-                ds_dict[f"{emb_col}_ids"] = df[f"{emb_col}_int_encoded"]
+        ds_dict[f"annotator_ids"] = df[f"annotator_int_encoded"]
 
         if "pair_id" in df:
             ds_dict["parent_text"] = df.prep_parent_text.astype(str)

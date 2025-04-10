@@ -13,11 +13,10 @@ def load_compute_metrics(pipeline_obj):
     elif "SingleTask" in str(type(pipeline_obj)):
         return _compute_metrics_single_task
     elif "HPM" in str(type(pipeline_obj)):
-        return _compute_metrics_aart
+        return _compute_metrics_hpm
 
 
 def _compute_metrics_single_task(eval_pred):
-    print(eval_pred)
     logits, labels = eval_pred
     metric_res = {}
     maj_preds = np.argmax(logits, axis=-1)
@@ -29,7 +28,34 @@ def _compute_metrics_single_task(eval_pred):
         metric_res["recall"],
         metric_res["f1"],
     ) = get_a_p_r_f(labels=labels, preds=maj_preds)
-    print(metric_res)
+    return metric_res
+
+
+def _compute_metrics_hpm(eval_pred):
+    logits, labels = eval_pred
+    annotator_ids = logits[:, 0].astype(int)
+    logits = logits[:, 1:]
+
+    predictions = np.argmax(logits, axis=-1)
+    metric_res = {}
+    (
+        metric_res["micro_accuracy"],
+        metric_res["micro_precision"],
+        metric_res["micro_recall"],
+        metric_res["micro_f1"],
+    ) = get_a_p_r_f(labels=labels, preds=predictions)
+    all_f1s = []
+    for annot_id in set(annotator_ids):
+        annotator_labels = labels[annotator_ids == annot_id]
+        annotator_preds = predictions[annotator_ids == annot_id]
+        assert len(annotator_labels) == len(annotator_preds)
+        _, _, _, f = get_a_p_r_f(
+            labels=annotator_labels, preds=annotator_preds, agg_method="macro"
+        )
+        if len(annotator_labels) > 5:
+            all_f1s.append(f)
+
+    metric_res["macro_f1"] = np.mean(all_f1s).round(3)
     return metric_res
 
 

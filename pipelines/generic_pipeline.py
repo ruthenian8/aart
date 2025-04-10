@@ -113,7 +113,7 @@ class GenericPipeline:
 
         data_dict = {}
 
-        if self.params.approach == "aart":
+        if self.params.approach == "aart" or self.params.approach == "hpm":
             if (
                 type(self.params.embedding_colnames) == str
                 and self.params.embedding_colnames.strip() == ""
@@ -125,7 +125,7 @@ class GenericPipeline:
                 )
 
         df = pd.read_csv(f"{data_path}/all_data.csv")
-        if self.params.approach == "aart":
+        if self.params.approach == "aart" or self.params.approach == "hpm":
             df[self.params.embedding_colnames] = df[
                 self.params.embedding_colnames
             ].replace(["Do Not Wish to Answer", "MISSING"], "unknown")
@@ -262,7 +262,7 @@ class GenericPipeline:
         print("dev shape: ", dev.shape)
         print("test shape: ", test.shape)
         scores = []
-        if self.params.approach == "aart":
+        if self.params.approach == "aart" or self.params.approach == "hpm":
             train, dev, test = self.encode_values(train.copy(), dev.copy(), test.copy())
 
         print("Name of pretrained language model: ", self.params.language_model_name)
@@ -424,6 +424,7 @@ class GenericPipeline:
                 tokenizer=self.tokenizer,
                 args=training_args,
                 compute_metrics=self.compute_metrics_function,
+                label_names=["label"],
                 callbacks=[
                     EarlyStoppingCallback(
                         early_stopping_patience=self.params.early_stopping_patience,
@@ -434,7 +435,7 @@ class GenericPipeline:
 
     def get_trainingargs(self, num_save_eval_log_steps, saving_models_dir):
         metric_for_best_model = (
-            "eval_f1" if self.params.approach in ["single", "hpm"] else "eval_macro_f1"
+            "eval_f1" if self.params.approach in ["single"] else "eval_macro_f1"
         )
         # metric_for_best_model = "eval_loss"
         training_args = {
