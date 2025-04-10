@@ -417,6 +417,11 @@ class GenericPipeline:
         else:
             from transformers import Trainer
 
+            training_args.label_names = ["labels"]
+            # optim = torch.optim.Adam([
+            #         {'params': model.hypernetwork.parameters()},
+            # ], lr=training_args.learning_rate)
+            # scheduler = torch.optim.lr_scheduler.LinearLR(optim)
             return Trainer(
                 model=model,
                 train_dataset=train_dataset,
@@ -424,13 +429,14 @@ class GenericPipeline:
                 tokenizer=self.tokenizer,
                 args=training_args,
                 compute_metrics=self.compute_metrics_function,
-                label_names=["label"],
+                label_names=["labels"],
                 callbacks=[
                     EarlyStoppingCallback(
                         early_stopping_patience=self.params.early_stopping_patience,
                         early_stopping_threshold=0.01,
                     )
                 ],
+                # optimizers = (optim, scheduler)
             )
 
     def get_trainingargs(self, num_save_eval_log_steps, saving_models_dir):

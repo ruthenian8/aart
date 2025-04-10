@@ -1,4 +1,5 @@
 import re
+from contextlib import contextmanager
 import torch
 import torch.nn as nn
 from transformers import (
@@ -44,7 +45,6 @@ class HyperPeftModel(PeftModel):
             layer_embedding_dim (int): Dimension of adapted layer embeddings.
         """
         super(HyperPeftModel, self).__init__(model, peft_config)
-        self.peft_config = peft_config  # Store for later use.
         self.config = model.config
         # Create the global hypernetwork.
         self.hypernetwork = Hypernetwork(
@@ -68,12 +68,13 @@ class HyperPeftModel(PeftModel):
         modules_with_layer: List[Tuple[nn.Module, int]] = []
         for name, module in self.base_model.named_modules():
             if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
+                for param in module.lora_A.parameters():
+                    param.requires_grad = False
+                for param in module.lora_B.parameters():
+                    param.requires_grad = False
                 # Extract layer number with a regex pattern like "layer.<number>"
                 match = re.search(r"layer\.(\d+)", name)
-                if match:
-                    layer_num = int(match.group(1))
-                else:
-                    layer_num = 0
+                layer_num = int(match.group(1)) if match else 0
                 modules_with_layer.append((module, layer_num))
 
         # Fit a LabelEncoder on the extracted layer numbers.
@@ -89,6 +90,21 @@ class HyperPeftModel(PeftModel):
             modules_with_layer, encoded_layer_numbers
         ):
             self.lora_modules.append((module, int(encoded_layer)))
+
+    @contextmanager
+    def _patch_modules_temporarily(
+        self, effective_weights: List[Tuple[nn.Module, torch.Tensor]]
+    ):
+        """Temporarily patch modules’ weights for the forward pass."""
+        old_weights = {}
+        for module, new_weight in effective_weights:
+            old_weights[module] = module.weight
+            module.weight = new_weight
+        try:
+            yield
+        finally:
+            for module, _ in effective_weights:
+                module.weight = old_weights[module]
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         """
@@ -109,9 +125,15 @@ class HyperPeftModel(PeftModel):
             The output of the base model, typically a dictionary with "loss" and "logits".
         """
         HN_ids: torch.Tensor = kwargs.pop("annotator_ids", None)
+        new_kwargs = {
+            "input_ids": kwargs["input_ids"],
+            "attention_mask": kwargs["attention_mask"],
+            "labels": kwargs["labels"],
+        }
         if HN_ids is not None:
             r = self.peft_config["default"].r
             batch_size = HN_ids.size(0)
+            patch_list = []
             for module, encoded_layer in self.lora_modules:
                 # Create a tensor for the layer identifier that matches the batch size.
                 layer_ids = torch.full_like(HN_ids, fill_value=encoded_layer)
@@ -129,17 +151,20 @@ class HyperPeftModel(PeftModel):
                 delta_weight = torch.bmm(
                     b_matrices, a_matrices
                 )  # (batch, b_dim, a_dim)
-                base_weight = module.weight.unsqueeze(0).expand(batch_size, -1, -1)
+                base_weight = (
+                    module.weight.detach().unsqueeze(0).expand(batch_size, -1, -1)
+                )
+                # base_weight = module.weight.unsqueeze(0).expand(batch_size, -1, -1)
                 # Update the module weight with the delta.
-                module._parameters["weight"] = nn.Parameter(base_weight + delta_weight)
+                # module._parameters["weight"] = nn.Parameter(base_weight + delta_weight)
+                patch_list.append((module, base_weight + delta_weight))
+            with self._patch_modules_temporarily(patch_list):
+                outputs = self.base_model(*args, **new_kwargs)
+        else:
+            outputs = self.base_model(*args, **new_kwargs)
 
-        # Pass through the base model with the remaining standard inputs.
-        new_kwargs = {
-            "input_ids": kwargs["input_ids"],
-            "attention_mask": kwargs["attention_mask"],
-            "labels": kwargs["labels"],
-        }
-        outputs = self.base_model(*args, **new_kwargs)
+        # outputs = self.base_model(*args, **new_kwargs)
+
         # If the output is not already a dictionary, wrap it; Trainer API expects a dict.
         if not isinstance(outputs, dict):
             outputs = {"logits": outputs}
@@ -188,7 +213,7 @@ class HyperPeftModel(PeftModel):
         # Define LoRA configuration.
         peft_config = LoraConfig(
             task_type="SEQ_CLS",  # Adjust based on your task.
-            inference_mode=True,
+            inference_mode=False,
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
