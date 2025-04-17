@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from transformers import Trainer
 from pipelines.generic_pipeline import GenericPipeline
-from model_architectures import HyperPeftModel
+from model_architectures import HyperPeftModel, CustomHyperAdapterModel
 from sklearn.utils.class_weight import compute_class_weight
 from utils import get_a_p_r_f
 
@@ -165,7 +165,7 @@ class HPMPipeline(GenericPipeline):
         train_labels_list = train_df.label.unique().astype(int).tolist()
         num_labels = len(set(train_labels_list))
 
-        classifier = HyperPeftModel.from_pretrained(
+        classifier = CustomHyperAdapterModel.from_pretrained(
             pretrained_model_name_or_path=self.params.language_model_name,
             num_labels=num_labels,
             num_embeddings=embd_type_cnt["annotator"],

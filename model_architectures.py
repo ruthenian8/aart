@@ -140,6 +140,7 @@ class CustomHyperAdapterModel(nn.Module):
         num_layer_embeddings: int = 100,
         layer_embedding_dim: int = 128,
         r: int = 2,
+        out_dim: int = 768,
         **kwargs,
     ) -> "CustomHyperAdapterModel":
         """
@@ -163,7 +164,7 @@ class CustomHyperAdapterModel(nn.Module):
         from transformers import AutoModelForSequenceClassification
 
         base_model = AutoModelForSequenceClassification.from_pretrained(
-            pretrained_model_name_or_path, num_labels=num_labels, **kwargs
+            pretrained_model_name_or_path, num_labels=num_labels
         )
         # Minimal adapter configuration; extend as needed.
         adapter_config = {"r": r}
@@ -176,6 +177,7 @@ class CustomHyperAdapterModel(nn.Module):
             num_layer_embeddings=num_layer_embeddings,
             layer_embedding_dim=layer_embedding_dim,
             r=r,
+            out_dim=out_dim
         )
 
 
