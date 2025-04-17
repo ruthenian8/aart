@@ -12,11 +12,170 @@ from transformers import (
 )
 from transformers.modeling_outputs import SequenceClassifierOutput
 from typing import Any, List, Optional, Union, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from updated_metrics import losses
 from peft import PeftModel, LoraConfig, get_peft_model
 from model_hypernetwork import Hypernetwork
+from model_adapted_linear import AdaptedLinear  # Custom adapter module
 from sklearn.preprocessing import LabelEncoder  # For encoding layer numbers
+
+
+class CustomHyperAdapterModel(nn.Module):
+    def __init__(
+        self,
+        base_model: "PreTrainedModel",
+        adapter_config: dict,
+        num_embeddings: int = 256,
+        embedding_dim: int = 768,
+        hidden_dim: int = 128,
+        num_layer_embeddings: int = 100,
+        layer_embedding_dim: int = 128,
+        r: int = 8,
+    ):
+        """
+        Custom model that integrates a hypernetwork to predict adapter weights
+        from global HN_ids and layer_ids, and uses custom adapter modules (e.g. AdaptedLinear)
+        to replace target layers in the base model.
+        
+        Args:
+            base_model (PreTrainedModel): The pretrained base model.
+            adapter_config (dict): A configuration dictionary for adapter parameters (e.g. low-rank factor).
+            num_embeddings (int): Number of embeddings for global hypernetwork identifiers.
+            embedding_dim (int): Dimensionality for global hypernetwork embeddings.
+            hidden_dim (int): Hidden dimension of the hypernetwork.
+            num_layer_embeddings (int): Number of distinct embeddings for layer identifiers.
+            layer_embedding_dim (int): Embedding dimension for layer identifiers.
+            r (int): The low-rank factor used by the adapters.
+        """
+        super(CustomHyperAdapterModel, self).__init__()
+        self.base_model = base_model
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+
+        self.adapter_config = adapter_config
+        self.r = r
+        # Create the hypernetwork that will predict low-rank adapter weights.
+        self.hypernetwork = Hypernetwork(
+            num_embeddings=num_embeddings,
+            embedding_dim=embedding_dim,
+            num_layer_embeddings=num_layer_embeddings,
+            layer_embedding_dim=layer_embedding_dim,
+            hidden_dim=hidden_dim,
+            out_A_dim=r * embedding_dim,
+            out_B_dim=r * embedding_dim,
+        )
+        # Replace target layers in the base model with our custom adapter modules.
+        self._replace_adapter_layers()
+
+    def _replace_adapter_layers(self):
+        """
+        Replace selected layers in the base model with custom adapter modules.
+        In this example, we assume the base model is BERT-like and replace the
+        feed-forward “intermediate” dense layer in each transformer block with an AdaptedLinear.
+        The replaced module stores its layer identifier in its attribute "layer_id".
+        """
+        if hasattr(self.base_model, "bert") and hasattr(self.base_model.bert, "encoder"):
+            for layer_idx, block in enumerate(self.base_model.bert.encoder.layer):
+                # Retrieve the original dense layer from the intermediate feed-forward block.
+                original_dense = block.intermediate.dense
+                in_features = original_dense.in_features
+                out_features = original_dense.out_features
+                # Create a new custom adapter module that uses AdaptedLinear.
+                adapted_linear = AdaptedLinear(in_features, out_features, self.r, self.hypernetwork)
+                # Save the layer index (will be used as layer_id during hypernetwork inference).
+                adapted_linear.layer_id = layer_idx  # Stored as an integer
+                # Replace the original dense layer with our adapted module.
+                block.intermediate.dense = adapted_linear
+        else:
+            raise ValueError("Base model architecture not recognized for adapter replacement.")
+
+    def forward(self, input_ids, attention_mask=None, labels=None, HN_ids=None, **kwargs):
+        """
+        The forward pass for the CustomHyperAdapterModel.
+        If HN_ids (global hypernetwork IDs) is provided, it traverses the base model to
+        assign these identifiers to each custom adapter module. In turn, each adapted module
+        will use its stored layer_id to call the hypernetwork and generate dynamic adapter weights.
+        
+        Args:
+            input_ids (torch.Tensor): Input token IDs.
+            attention_mask (torch.Tensor, optional): Attention mask.
+            labels (torch.Tensor, optional): Labels for training.
+            HN_ids (torch.Tensor): Global hypernetwork indices (e.g. from a LabelEncoder).
+            **kwargs: Additional arguments for the base model.
+        
+        Returns:
+            A dict containing outputs from the base model (e.g. loss and logits).
+        """
+        # Traverse the base model and inject HN_ids into custom adapter modules.
+        # Each custom adapter (AdaptedLinear) is expected to use its stored layer_id and the provided HN_ids.
+        if HN_ids is not None:
+            def inject_HN_ids(module):
+                for child in module.children():
+                    # If this is an adapted module and it has a stored layer_id, assign HN_ids.
+                    if isinstance(child, AdaptedLinear) and hasattr(child, "layer_id"):
+                        child.global_HN_ids = HN_ids  # Save HN_ids as an attribute for use in forward
+                    inject_HN_ids(child)
+            inject_HN_ids(self.base_model)
+        
+        # Forward the remaining inputs to the base model.
+        outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+            **kwargs
+        )
+        if not isinstance(outputs, dict):
+            outputs = {"logits": outputs}
+        return outputs
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: str,
+        num_labels: int = 2,
+        num_embeddings: int = 256,
+        embedding_dim: int = 768,
+        hidden_dim: int = 128,
+        num_layer_embeddings: int = 100,
+        layer_embedding_dim: int = 128,
+        r: int = 8,
+        **kwargs,
+    ) -> "CustomHyperAdapterModel":
+        """
+        Factory method that loads a pretrained model and returns an instance
+        of CustomHyperAdapterModel with custom adapter modules.
+        
+        Args:
+            pretrained_model_name_or_path (str): The identifier or path of the pretrained model.
+            num_labels (int): Number of labels (for classification tasks).
+            num_embeddings (int): Number of embeddings for global hypernetwork identifiers.
+            embedding_dim (int): Dimensionality for global hypernetwork embeddings.
+            hidden_dim (int): Hidden layer dimension of the hypernetwork.
+            num_layer_embeddings (int): Number of embeddings for layer identifiers.
+            layer_embedding_dim (int): Embedding dimension for layer identifiers.
+            r (int): Low-rank factor for the adapters.
+            **kwargs: Additional keyword arguments for loading the pretrained model.
+        
+        Returns:
+            An instance of CustomHyperAdapterModel.
+        """
+        from transformers import AutoModelForSequenceClassification
+
+        base_model = AutoModelForSequenceClassification.from_pretrained(
+            pretrained_model_name_or_path, num_labels=num_labels, **kwargs
+        )
+        # Minimal adapter configuration; extend as needed.
+        adapter_config = {"r": r}
+        return cls(
+            base_model,
+            adapter_config,
+            num_embeddings=num_embeddings,
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+            num_layer_embeddings=num_layer_embeddings,
+            layer_embedding_dim=layer_embedding_dim,
+            r=r,
+        )
 
 
 class HyperPeftModel(PeftModel):
@@ -99,12 +258,14 @@ class HyperPeftModel(PeftModel):
         old_weights = {}
         for module, new_weight in effective_weights:
             old_weights[module] = module.weight
-            module.weight = new_weight
+            # module.weight = new_weight
+            module._parameters["weight"] = new_weight
         try:
             yield
         finally:
             for module, _ in effective_weights:
-                module.weight = old_weights[module]
+                # module.weight = old_weights[module]
+                module._parameters["weight"] = old_weights[module]
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         """

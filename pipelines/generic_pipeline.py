@@ -298,6 +298,8 @@ class GenericPipeline:
             training_args=training_args,
         )
         print(trainer.args)
+        print("n parameters: ")
+        print(trainer.get_num_trainable_parameters())
         # self.plot_text_embs(df=train.drop_duplicates(self.instance_id_col).copy(), language_model=model.roberta,
         #                     name_plot="before")
         trainer.train()
@@ -429,7 +431,6 @@ class GenericPipeline:
                 tokenizer=self.tokenizer,
                 args=training_args,
                 compute_metrics=self.compute_metrics_function,
-                label_names=["labels"],
                 callbacks=[
                     EarlyStoppingCallback(
                         early_stopping_patience=self.params.early_stopping_patience,
