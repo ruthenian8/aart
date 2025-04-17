@@ -30,7 +30,8 @@ class CustomHyperAdapterModel(nn.Module):
         hidden_dim: int = 128,
         num_layer_embeddings: int = 100,
         layer_embedding_dim: int = 128,
-        r: int = 8,
+        r: int = 2,
+        out_dim = 768
     ):
         """
         Custom model that integrates a hypernetwork to predict adapter weights
@@ -62,7 +63,7 @@ class CustomHyperAdapterModel(nn.Module):
             layer_embedding_dim=layer_embedding_dim,
             hidden_dim=hidden_dim,
             out_A_dim=r * embedding_dim,
-            out_B_dim=r * embedding_dim,
+            out_B_dim=r * out_dim,
         )
         # Replace target layers in the base model with our custom adapter modules.
         self._replace_adapter_layers()
@@ -70,12 +71,12 @@ class CustomHyperAdapterModel(nn.Module):
     def _replace_adapter_layers(self):
         """
         Replace selected layers in the base model with custom adapter modules.
-        In this example, we assume the base model is BERT-like and replace the
+        In this example, we assume the base model is roberta-like and replace the
         feed-forward “intermediate” dense layer in each transformer block with an AdaptedLinear.
         The replaced module stores its layer identifier in its attribute "layer_id".
         """
-        if hasattr(self.base_model, "bert") and hasattr(self.base_model.bert, "encoder"):
-            for layer_idx, block in enumerate(self.base_model.bert.encoder.layer):
+        if hasattr(self.base_model, "roberta") and hasattr(self.base_model.roberta, "encoder"):
+            for layer_idx, block in enumerate(self.base_model.roberta.encoder.layer):
                 # Retrieve the original dense layer from the intermediate feed-forward block.
                 original_dense = block.intermediate.dense
                 in_features = original_dense.in_features
@@ -106,6 +107,7 @@ class CustomHyperAdapterModel(nn.Module):
         Returns:
             A dict containing outputs from the base model (e.g. loss and logits).
         """
+        HN_ids: torch.Tensor = kwargs.pop("annotator_ids", None)
         # Traverse the base model and inject HN_ids into custom adapter modules.
         # Each custom adapter (AdaptedLinear) is expected to use its stored layer_id and the provided HN_ids.
         if HN_ids is not None:
@@ -122,7 +124,6 @@ class CustomHyperAdapterModel(nn.Module):
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
-            **kwargs
         )
         if not isinstance(outputs, dict):
             outputs = {"logits": outputs}
@@ -138,7 +139,7 @@ class CustomHyperAdapterModel(nn.Module):
         hidden_dim: int = 128,
         num_layer_embeddings: int = 100,
         layer_embedding_dim: int = 128,
-        r: int = 8,
+        r: int = 2,
         **kwargs,
     ) -> "CustomHyperAdapterModel":
         """

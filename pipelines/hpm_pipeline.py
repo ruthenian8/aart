@@ -171,6 +171,8 @@ class HPMPipeline(GenericPipeline):
             num_embeddings=embd_type_cnt["annotator"],
             embedding_dim=768,
             layer_embedding_dim=256,
+            r=2,
+            out_dim = 3072
         )
         return classifier
 
