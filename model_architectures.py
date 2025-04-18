@@ -126,7 +126,7 @@ class CustomHyperAdapterModel(nn.Module):
             labels=labels,
         )
         if not isinstance(outputs, dict):
-            outputs = {"logits": outputs}
+            outputs = {"loss": outputs.loss, "logits": outputs.logits, **{k: v for k, v in outputs.items() if k not in ("loss","logits")}}
         return outputs
 
     @classmethod
@@ -331,7 +331,7 @@ class HyperPeftModel(PeftModel):
 
         # If the output is not already a dictionary, wrap it; Trainer API expects a dict.
         if not isinstance(outputs, dict):
-            outputs = {"logits": outputs}
+            outputs = {"loss": outputs.loss, "logits": outputs.logits, **{k: v for k, v in outputs.items() if k not in ("loss","logits")}}
 
         outputs["logits"] = torch.cat((HN_ids.reshape(-1, 1), outputs["logits"]), 1)
         return outputs
