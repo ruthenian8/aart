@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from transformers import Trainer
 from pipelines.generic_pipeline import GenericPipeline
-from model_architectures import HyperPeftModel, CustomHyperAdapterModel
+from model_architectures import HyperPeftModel, CustomHyperAdapterModel, HyperLoRAModel
 from sklearn.utils.class_weight import compute_class_weight
 from utils import get_a_p_r_f
 
@@ -165,15 +165,21 @@ class HPMPipeline(GenericPipeline):
         train_labels_list = train_df.label.unique().astype(int).tolist()
         num_labels = len(set(train_labels_list))
 
-        classifier = CustomHyperAdapterModel.from_pretrained(
+        classifier  = HyperLoRAModel.from_pretrained(
             pretrained_model_name_or_path=self.params.language_model_name,
             num_labels=num_labels,
             num_embeddings=embd_type_cnt["annotator"],
-            embedding_dim=768,
-            layer_embedding_dim=256,
-            r=2,
-            out_dim = 3072
+            device=torch.device("cuda"),
         )
+        # classifier = CustomHyperAdapterModel.from_pretrained(
+        #     pretrained_model_name_or_path=self.params.language_model_name,
+        #     num_labels=num_labels,
+        #     num_embeddings=embd_type_cnt["annotator"],
+        #     embedding_dim=768,
+        #     layer_embedding_dim=256,
+        #     r=2,
+        #     out_dim = 3072
+        # )
         return classifier
 
     def get_batches(self, df):

@@ -15,7 +15,7 @@ from typing import Any, List, Optional, Union, Tuple
 from dataclasses import dataclass
 from updated_metrics import losses
 from peft import PeftModel, LoraConfig, get_peft_model
-from model_hypernetwork import Hypernetwork
+from model_hypernetwork import Hypernetwork, HyperNetworkV2
 from model_adapted_linear import AdaptedLinear  # Custom adapter module
 from sklearn.preprocessing import LabelEncoder  # For encoding layer numbers
 
@@ -181,6 +181,127 @@ class CustomHyperAdapterModel(nn.Module):
         )
 
 
+class HyperLoRAModel(PeftModel):
+    def __init__(self,
+                model: PreTrainedModel,
+                peft_config: LoraConfig,
+                num_embeddings: int = 256,
+                device: torch.device = None
+            ):
+        super(HyperLoRAModel, self).__init__(model, peft_config)
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.config = model.config
+        self.loss = torch.nn.CrossEntropyLoss()
+
+        self.lora_modules = []
+        for layer in self.model.base_model.roberta.encoder.layer:
+            self.lora_modules.append(layer.attention.self.query)
+            self.lora_modules.append(layer.attention.self.value)
+        # freeze LoRA weights
+        for module in self.lora_modules:
+            for p in module.parameters():
+                p.requires_grad_(False)
+        # hypernetwork init
+        # speaker_dim = self.model.config.d_model
+        speaker_dim = self.model.config.hidden_size
+        hidden_dim = self.model.config.hidden_size
+        context_dim = self.model.config.hidden_size
+        num_mod = len(self.lora_modules)
+        in_dim = self.lora_modules[0].lora_A['default'].weight.shape[1]
+        out_dim = self.lora_modules[0].lora_B['default'].weight.shape[0]
+        self.hypernet = HyperNetworkV2(
+            speaker_dim,
+            context_dim,
+            hidden_dim,
+            in_dim,
+            out_dim,
+            peft_config.r,
+            num_embeddings,
+            num_mod,
+        )
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: str,
+        num_labels: int = 2,
+        num_embeddings: int = 256,
+        lora_r: int = 2,
+        lora_alpha: int = 32,
+        lora_dropout: float = 0.1,
+        device: torch.device = None,
+    ) -> "HyperLoRAModel":
+        """
+        Factory function to create a HyperPeftModel instance from a pretrained model.
+
+        Args:
+            pretrained_model_name_or_path (str): Path or identifier for the pretrained model.
+            num_labels (int): Number of labels for classification tasks.
+            num_embeddings (int): Number of embeddings for the global hypernetwork.
+            lora_r (int): Low-rank factor for LoRA.
+            lora_alpha (int): Scaling factor for LoRA.
+            lora_dropout (float): Dropout rate for LoRA layers.
+            device (torch.device): Device to run the model on.
+        """
+        from transformers import AutoModelForSequenceClassification
+
+        # Load the pretrained model.
+        model = AutoModelForSequenceClassification.from_pretrained(
+            pretrained_model_name_or_path, num_labels=num_labels
+        )
+
+        # Define LoRA configuration.
+        peft_config = LoraConfig(
+            r=lora_r,
+            task_type="SEQ_CLS",
+            lora_alpha=lora_alpha,
+            # target_modules=["fc1"],  # first MLP weight fc1 (W1)
+            target_modules=["query", "value"],
+            fan_in_fan_out=False,
+            lora_dropout=lora_dropout,
+        )
+
+        # Wrap the model with LoRA using PEFT.
+        lora_model = get_peft_model(model, peft_config)
+
+        # Instantiate the HyperPeftModel.
+        hyper_peft_model = cls(
+            lora_model,
+            peft_config,
+            num_embeddings=num_embeddings,
+            device=device,
+        )
+        return hyper_peft_model
+
+    def forward(self, *args, **kwargs):
+        HN_ids: torch.Tensor = kwargs.pop("annotator_ids", None)
+        new_kwargs = {
+            "input_ids": kwargs["input_ids"].to(self.device),
+            "attention_mask": kwargs["attention_mask"].to(self.device),
+            "labels": kwargs["labels"].to(self.device),
+        }
+        HN_ids = HN_ids.to(self.device)
+        batch = HN_ids.size(0)
+
+        A_batch, B_batch = self.hypernet(HN_ids)
+
+        outputs = []
+        for i in range(batch):
+            # inject factors
+            for j, module in enumerate(self.lora_modules):
+                module.lora_A['default'].weight = nn.Parameter(A_batch[i, j])
+                module.lora_B['default'].weight = nn.Parameter(B_batch[i, j])
+
+            # forward generation
+            out = self.base_model(*args, **new_kwargs).logits
+            outputs.append(out[i,:])
+        outputs = torch.vstack(outputs)
+        loss = self.loss(outputs, new_kwargs["labels"])
+        catted_logits = torch.hstack((HN_ids, outputs))
+        # catted_logits = torch.cat((HN_ids.reshape(-1, 1), outputs), 1)
+        return {"loss": loss, "logits": catted_logits}
+
+
 class HyperPeftModel(PeftModel):
     def __init__(
         self,
@@ -219,6 +340,7 @@ class HyperPeftModel(PeftModel):
             out_A_dim=peft_config.r * embedding_dim,
             out_B_dim=peft_config.r * embedding_dim,
         )
+        self.loss = torch.nn.CrossEntropyLoss()
         self._patch_lora_modules()
 
     def _patch_lora_modules(self) -> None:
@@ -330,11 +452,12 @@ class HyperPeftModel(PeftModel):
         # outputs = self.base_model(*args, **new_kwargs)
 
         # If the output is not already a dictionary, wrap it; Trainer API expects a dict.
+        loss = self.loss(outputs.logits, new_kwargs["labels"])
         if not isinstance(outputs, dict):
-            outputs = {"loss": outputs.loss, "logits": outputs.logits, **{k: v for k, v in outputs.items() if k not in ("loss","logits")}}
+            outputs = {**outputs, "loss": loss, "logits": outputs.logits}
 
-        outputs["logits"] = torch.cat((HN_ids.reshape(-1, 1), outputs["logits"]), 1)
-        return outputs
+        catted_logits = torch.cat((HN_ids.reshape(-1, 1), outputs["logits"]), 1)
+        return {**outputs, "loss": loss, "logits": catted_logits}
 
     @classmethod
     def from_pretrained(
