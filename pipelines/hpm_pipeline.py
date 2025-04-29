@@ -165,7 +165,7 @@ class HPMPipeline(GenericPipeline):
         train_labels_list = train_df.label.unique().astype(int).tolist()
         num_labels = len(set(train_labels_list))
 
-        classifier  = HyperLoRAModel.from_pretrained(
+        classifier = HyperLoRAModel.from_pretrained(
             pretrained_model_name_or_path=self.params.language_model_name,
             num_labels=num_labels,
             num_embeddings=embd_type_cnt["annotator"],

@@ -1,6 +1,7 @@
 import re
 from contextlib import contextmanager
 import torch
+from torch import functional as F
 import torch.nn as nn
 from transformers import (
     AutoConfig,
@@ -31,13 +32,13 @@ class CustomHyperAdapterModel(nn.Module):
         num_layer_embeddings: int = 100,
         layer_embedding_dim: int = 128,
         r: int = 2,
-        out_dim = 768
+        out_dim=768,
     ):
         """
         Custom model that integrates a hypernetwork to predict adapter weights
         from global HN_ids and layer_ids, and uses custom adapter modules (e.g. AdaptedLinear)
         to replace target layers in the base model.
-        
+
         Args:
             base_model (PreTrainedModel): The pretrained base model.
             adapter_config (dict): A configuration dictionary for adapter parameters (e.g. low-rank factor).
@@ -75,35 +76,43 @@ class CustomHyperAdapterModel(nn.Module):
         feed-forward “intermediate” dense layer in each transformer block with an AdaptedLinear.
         The replaced module stores its layer identifier in its attribute "layer_id".
         """
-        if hasattr(self.base_model, "roberta") and hasattr(self.base_model.roberta, "encoder"):
+        if hasattr(self.base_model, "roberta") and hasattr(
+            self.base_model.roberta, "encoder"
+        ):
             for layer_idx, block in enumerate(self.base_model.roberta.encoder.layer):
                 # Retrieve the original dense layer from the intermediate feed-forward block.
                 original_dense = block.intermediate.dense
                 in_features = original_dense.in_features
                 out_features = original_dense.out_features
                 # Create a new custom adapter module that uses AdaptedLinear.
-                adapted_linear = AdaptedLinear(in_features, out_features, self.r, self.hypernetwork)
+                adapted_linear = AdaptedLinear(
+                    in_features, out_features, self.r, self.hypernetwork
+                )
                 # Save the layer index (will be used as layer_id during hypernetwork inference).
                 adapted_linear.layer_id = layer_idx  # Stored as an integer
                 # Replace the original dense layer with our adapted module.
                 block.intermediate.dense = adapted_linear
         else:
-            raise ValueError("Base model architecture not recognized for adapter replacement.")
+            raise ValueError(
+                "Base model architecture not recognized for adapter replacement."
+            )
 
-    def forward(self, input_ids, attention_mask=None, labels=None, HN_ids=None, **kwargs):
+    def forward(
+        self, input_ids, attention_mask=None, labels=None, HN_ids=None, **kwargs
+    ):
         """
         The forward pass for the CustomHyperAdapterModel.
         If HN_ids (global hypernetwork IDs) is provided, it traverses the base model to
         assign these identifiers to each custom adapter module. In turn, each adapted module
         will use its stored layer_id to call the hypernetwork and generate dynamic adapter weights.
-        
+
         Args:
             input_ids (torch.Tensor): Input token IDs.
             attention_mask (torch.Tensor, optional): Attention mask.
             labels (torch.Tensor, optional): Labels for training.
             HN_ids (torch.Tensor): Global hypernetwork indices (e.g. from a LabelEncoder).
             **kwargs: Additional arguments for the base model.
-        
+
         Returns:
             A dict containing outputs from the base model (e.g. loss and logits).
         """
@@ -111,14 +120,18 @@ class CustomHyperAdapterModel(nn.Module):
         # Traverse the base model and inject HN_ids into custom adapter modules.
         # Each custom adapter (AdaptedLinear) is expected to use its stored layer_id and the provided HN_ids.
         if HN_ids is not None:
+
             def inject_HN_ids(module):
                 for child in module.children():
                     # If this is an adapted module and it has a stored layer_id, assign HN_ids.
                     if isinstance(child, AdaptedLinear) and hasattr(child, "layer_id"):
-                        child.global_HN_ids = HN_ids  # Save HN_ids as an attribute for use in forward
+                        child.global_HN_ids = (
+                            HN_ids  # Save HN_ids as an attribute for use in forward
+                        )
                     inject_HN_ids(child)
+
             inject_HN_ids(self.base_model)
-        
+
         # Forward the remaining inputs to the base model.
         outputs = self.base_model(
             input_ids=input_ids,
@@ -126,7 +139,11 @@ class CustomHyperAdapterModel(nn.Module):
             labels=labels,
         )
         if not isinstance(outputs, dict):
-            outputs = {"loss": outputs.loss, "logits": outputs.logits, **{k: v for k, v in outputs.items() if k not in ("loss","logits")}}
+            outputs = {
+                "loss": outputs.loss,
+                "logits": outputs.logits,
+                **{k: v for k, v in outputs.items() if k not in ("loss", "logits")},
+            }
         return outputs
 
     @classmethod
@@ -146,7 +163,7 @@ class CustomHyperAdapterModel(nn.Module):
         """
         Factory method that loads a pretrained model and returns an instance
         of CustomHyperAdapterModel with custom adapter modules.
-        
+
         Args:
             pretrained_model_name_or_path (str): The identifier or path of the pretrained model.
             num_labels (int): Number of labels (for classification tasks).
@@ -157,7 +174,7 @@ class CustomHyperAdapterModel(nn.Module):
             layer_embedding_dim (int): Embedding dimension for layer identifiers.
             r (int): Low-rank factor for the adapters.
             **kwargs: Additional keyword arguments for loading the pretrained model.
-        
+
         Returns:
             An instance of CustomHyperAdapterModel.
         """
@@ -177,38 +194,43 @@ class CustomHyperAdapterModel(nn.Module):
             num_layer_embeddings=num_layer_embeddings,
             layer_embedding_dim=layer_embedding_dim,
             r=r,
-            out_dim=out_dim
+            out_dim=out_dim,
         )
 
 
 class HyperLoRAModel(PeftModel):
-    def __init__(self,
-                model: PreTrainedModel,
-                peft_config: LoraConfig,
-                num_embeddings: int = 256,
-                device: torch.device = None
-            ):
-        super(HyperLoRAModel, self).__init__(model, peft_config)
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.config = model.config
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        peft_config: LoraConfig,
+        num_embeddings: int = 256,
+        device: torch.device = None,
+    ):
+        super().__init__(model, peft_config)
+        self.device = device or torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self.loss = torch.nn.CrossEntropyLoss()
 
+        # collect all the 'query' and 'value' LoRA modules
         self.lora_modules = []
         for layer in self.model.base_model.roberta.encoder.layer:
-            self.lora_modules.append(layer.attention.self.query)
-            self.lora_modules.append(layer.attention.self.value)
-        # freeze LoRA weights
+            self.lora_modules.extend(
+                [layer.attention.self.query, layer.attention.self.value]
+            )
+        # freeze their original LoRA params
         for module in self.lora_modules:
             for p in module.parameters():
                 p.requires_grad_(False)
-        # hypernetwork init
-        # speaker_dim = self.model.config.d_model
+
+        # hypernetwork dims
         speaker_dim = self.model.config.hidden_size
         hidden_dim = self.model.config.hidden_size
         context_dim = self.model.config.hidden_size
         num_mod = len(self.lora_modules)
-        in_dim = self.lora_modules[0].lora_A['default'].weight.shape[1]
-        out_dim = self.lora_modules[0].lora_B['default'].weight.shape[0]
+        in_dim = self.lora_modules[0].lora_A["default"].weight.shape[1]
+        out_dim = self.lora_modules[0].lora_B["default"].weight.shape[0]
+
         self.hypernet = HyperNetworkV2(
             speaker_dim,
             context_dim,
@@ -219,6 +241,38 @@ class HyperLoRAModel(PeftModel):
             num_embeddings,
             num_mod,
         )
+
+    @contextmanager
+    def _inject_lora_weights(self, A: torch.Tensor, B: torch.Tensor):
+        """
+        Temporarily override each LoRA module’s forward to use
+        F.linear with our generated A/B, instead of its .weight.
+        """
+        handles = []
+        for j, module in enumerate(self.lora_modules):
+            # the two Linear submodules created by PEFT
+            lora_A = module.lora_A["default"]
+            lora_B = module.lora_B["default"]
+            wA = A[j].to(self.device)
+            wB = B[j].to(self.device)
+
+            # forward-hook replaces the module’s output with F.linear(input, wX, bias)
+            handles.append(
+                lora_A.register_forward_hook(
+                    lambda mod, inp, out, w=wA: F.linear(inp[0], w, mod.bias)
+                )
+            )
+            handles.append(
+                lora_B.register_forward_hook(
+                    lambda mod, inp, out, w=wB: F.linear(inp[0], w, mod.bias)
+                )
+            )
+
+        try:
+            yield
+        finally:
+            for h in handles:
+                h.remove()
 
     @classmethod
     def from_pretrained(
@@ -274,32 +328,41 @@ class HyperLoRAModel(PeftModel):
         return hyper_peft_model
 
     def forward(self, *args, **kwargs):
-        HN_ids: torch.Tensor = kwargs.pop("annotator_ids", None)
-        new_kwargs = {
-            "input_ids": kwargs["input_ids"].to(self.device),
-            "attention_mask": kwargs["attention_mask"].to(self.device),
-            "labels": kwargs["labels"].to(self.device),
-        }
-        HN_ids = HN_ids.to(self.device)
+        # pop off the hypernetwork IDs
+        HN_ids = kwargs.pop("annotator_ids").to(self.device)
         batch = HN_ids.size(0)
 
-        A_batch, B_batch = self.hypernet(HN_ids)
+        # generate all A and B for the whole batch
+        A_batch, B_batch = self.hypernet(
+            HN_ids
+        )  # shapes: (B, M, r, in_dim) and (B, M, out_dim, r)
 
-        outputs = []
+        logits_list = []
         for i in range(batch):
-            # inject factors
-            for j, module in enumerate(self.lora_modules):
-                module.lora_A['default'].weight = nn.Parameter(A_batch[i, j])
-                module.lora_B['default'].weight = nn.Parameter(B_batch[i, j])
+            # for each sample, inject its slice of adapter weights
+            Ai = A_batch[i]  # (M, r, in_dim)
+            Bi = B_batch[i]  # (M, out_dim, r)
 
-            # forward generation
-            out = self.base_model(*args, **new_kwargs).logits
-            outputs.append(out[i,:])
-        outputs = torch.vstack(outputs)
-        loss = self.loss(outputs, new_kwargs["labels"])
-        catted_logits = torch.hstack((HN_ids, outputs))
-        # catted_logits = torch.cat((HN_ids.reshape(-1, 1), outputs), 1)
-        return {"loss": loss, "logits": catted_logits}
+            with self._inject_lora_weights(Ai, Bi):
+                # run the model on just this sample
+                single_kwargs = {
+                    "input_ids": kwargs["input_ids"][i].unsqueeze(0).to(self.device),
+                    "attention_mask": kwargs["attention_mask"][i]
+                    .unsqueeze(0)
+                    .to(self.device),
+                    "labels": kwargs["labels"][i].unsqueeze(0).to(self.device),
+                }
+                out = self.base_model(
+                    *args, **single_kwargs
+                ).logits  # shape (1, num_labels)
+                logits_list.append(out)
+
+        # stack back to (B, num_labels)
+        logits = torch.cat(logits_list, dim=0)
+        loss = self.loss(logits, kwargs["labels"].to(self.device))
+        # if you want to "catenate" HN_ids into the logits (as before):
+        catted = torch.cat([HN_ids.unsqueeze(-1), logits], dim=-1)
+        return {"loss": loss, "logits": catted}
 
 
 class HyperPeftModel(PeftModel):

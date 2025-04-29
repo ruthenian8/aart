@@ -4,8 +4,11 @@ import torch.nn.functional as F
 from typing import Optional
 import weakref
 
+
 class AdaptedLinear(nn.Module):
-    def __init__(self, in_features: int, out_features: int, r: int, hypernetwork: nn.Module):
+    def __init__(
+        self, in_features: int, out_features: int, r: int, hypernetwork: nn.Module
+    ):
         """
         Linear layer with dynamic LoRA-style adaptation using a hypernetwork.
         Replaces a standard nn.Linear and, if global hypernetwork identifiers
@@ -60,15 +63,19 @@ class AdaptedLinear(nn.Module):
             hypernetwork = self._hypernetwork_ref()
             A, B = hypernetwork(HN_ids, layer_ids)
             # Reshape into low-rank factors
-            A = A.view(batch_size, self.r, self.in_features)   # (batch, r, in_features)
-            B = B.view(batch_size, self.out_features, self.r)  # (batch, out_features, r)
+            A = A.view(batch_size, self.r, self.in_features)  # (batch, r, in_features)
+            B = B.view(
+                batch_size, self.out_features, self.r
+            )  # (batch, out_features, r)
             # Compute delta weight
-            delta_weight = torch.bmm(B, A)                     # (batch, out_features, in_features)
+            delta_weight = torch.bmm(B, A)  # (batch, out_features, in_features)
             # Expand base weight
             base_weight = self.weight.unsqueeze(0).expand(batch_size, -1, -1)
             adapted_weight = base_weight + delta_weight
             # Apply adapted weight
-            x_exp = x.view(batch_size, self.in_features, x.size(1))                             # (batch, in_features, 1)
+            x_exp = x.view(
+                batch_size, self.in_features, x.size(1)
+            )  # (batch, in_features, 1)
             out = torch.bmm(adapted_weight, x_exp).squeeze(2)  # (batch, out_features)
             out = out.squeeze(2).permute(0, 2, 1) + self.bias
         else:
