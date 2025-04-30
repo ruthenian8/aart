@@ -320,7 +320,7 @@ class GenericPipeline:
                     f"saving embeddings to {embs_dir}/{k}_embeddings_{param_combinations}_rand_seed_{self.params.random_state}.pkl"
                 )
 
-                emb_file_name = f"{embs_dir}/{k}_embeddings_{param_combinations}_rand_seed_{self.params.random_state}.pkl"
+                emb_file_name = f"{embs_dir}/{k}_embeddings_{param_combinations.replace('/', '_')[:30]}_rand_seed_{self.params.random_state}.pkl"
                 # with open(emb_file_name, 'w') as file:
                 #     for j in train[f'{k}_int_encoded'].unique():
                 #         json.dump({self.data_dict[f'{k}_map'][j]: getattr(model, f"{k}_embeddings").weight.detach().cpu().numpy()[j, :]}, file)
@@ -335,7 +335,7 @@ class GenericPipeline:
                     for j in train[f"{k}_int_encoded"].unique()
                 }
 
-                with open(emb_file_name, "wb") as fp:
+                with open(emb_file_name, "wb+") as fp:
                     pickle.dump(annot_embs_dict, fp)
                     print(f"{k} embeddings saved successfully to file")
                 print("~" * 30)
@@ -463,7 +463,7 @@ class GenericPipeline:
             "per_device_train_batch_size": self.params.batch_size,
             "per_device_eval_batch_size": self.params.batch_size,
             "learning_rate": self.params.learning_rate,
-            # "weight_decay": 0.01,
+            "weight_decay": 0.01,
             "warmup_steps": 2 * num_save_eval_log_steps,
             "remove_unused_columns": False,
             "seed": self.params.random_state,

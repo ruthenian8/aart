@@ -1,7 +1,7 @@
 import re
 from contextlib import contextmanager
 import torch
-from torch import functional as F
+from torch.nn import functional as F
 import torch.nn as nn
 from transformers import (
     AutoConfig,
