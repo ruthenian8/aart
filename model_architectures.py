@@ -214,9 +214,13 @@ class HyperLoRAModel(PeftModel):
 
         # collect all the 'query' and 'value' LoRA modules
         self.lora_modules = []
-        for layer in self.model.base_model.roberta.encoder.layer:
+        target_modules = peft_config.target_modules
+        model_type = self.model.config.model_type
+        model = getattr(self.model.base_model, model_type)
+        encoder_or_decoder = getattr(model, "encoder", getattr(model, "decoder"))
+        for layer in encoder_or_decoder.layer:
             self.lora_modules.extend(
-                [layer.attention.self.query, layer.attention.self.value]
+                [getattr(layer.attention.self, module) for module in target_modules]
             )
         # freeze their original LoRA params
         for module in self.lora_modules:
