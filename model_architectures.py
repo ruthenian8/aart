@@ -204,6 +204,7 @@ class HyperLoRAModel(PeftModel):
         model: torch.nn.Module,
         peft_config: LoraConfig,
         num_embeddings: int = 256,
+        loss_weights: dict = None,
         device: torch.device = None,
     ):
         super().__init__(model, peft_config)
@@ -211,14 +212,12 @@ class HyperLoRAModel(PeftModel):
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.loss = torch.nn.CrossEntropyLoss()
+        self.loss_weights = loss_weights
 
         # collect all the 'query' and 'value' LoRA modules
         self.lora_modules = []
         target_modules = peft_config.target_modules
-        model_type = self.model.config.model_type
-        model = getattr(self.model.base_model, model_type)
-        encoder_or_decoder = getattr(model, "encoder", getattr(model, "decoder"))
-        for layer in encoder_or_decoder.layer:
+        for layer in self.model.base_model.roberta.encoder.layer:
             self.lora_modules.extend(
                 [getattr(layer.attention.self, module) for module in target_modules]
             )
@@ -342,6 +341,7 @@ class HyperLoRAModel(PeftModel):
         )  # shapes: (B, M, r, in_dim) and (B, M, out_dim, r)
 
         logits_list = []
+        loss_list = []
         for i in range(batch):
             # for each sample, inject its slice of adapter weights
             Ai = A_batch[i]  # (M, r, in_dim)
@@ -360,9 +360,14 @@ class HyperLoRAModel(PeftModel):
                     *args, **single_kwargs
                 ).logits  # shape (1, num_labels)
                 logits_list.append(out)
+                # HN_id = HN_ids[i].unsqueeze(0).item()
+                # loss = torch.nn.CrossEntropyLoss(weight=self.loss_weights[HN_id])
+                # loss_value = loss(out, single_kwargs["labels"])
+                # loss_list.append(loss_value)
 
         # stack back to (B, num_labels)
         logits = torch.cat(logits_list, dim=0)
+        # loss = torch.stack(loss_list, dim=0).mean().to(self.device)
         loss = self.loss(logits, kwargs["labels"].to(self.device))
         # if you want to "catenate" HN_ids into the logits (as before):
         catted = torch.cat([HN_ids.unsqueeze(-1), logits], dim=-1)

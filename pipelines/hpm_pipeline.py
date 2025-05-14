@@ -37,18 +37,6 @@ class HPMPipeline(GenericPipeline):
         assert "majority_label" not in df.columns
         return aggregated_labels
 
-    def _create_loss_label_weights(self, labels):
-        weights = compute_class_weight(
-            class_weight="balanced", classes=np.unique(labels), y=labels
-        )
-        print("Weights used for labels: ", weights)
-        if len(weights) == 1:
-            weights = [0.01, 1]
-        weights = torch.tensor(
-            weights, dtype=torch.bfloat16, device="cuda"
-        )  # .to(self.device)
-        return weights
-
     def _create_loss_annotator_weights(self, annotators):
         annot_codes = np.unique(annotators)
         for i in range(len(annot_codes)):
@@ -155,6 +143,22 @@ class HPMPipeline(GenericPipeline):
 
         return train_df, dev_df, test_df
 
+    def _create_loss_label_weights(self, labels: pd.Series) -> dict:
+        weights = labels.apply(
+            lambda x: torch.tensor(
+                compute_class_weight(
+                    classes=sorted(list(set(x))),
+                    y=x,
+                    class_weight='balanced'
+                ),
+                dtype=torch.bfloat16,
+                device="cuda"
+            )
+        )
+        weights = weights.to_dict()
+
+        return weights
+
     def _new_model(self, train_df):
         self.task_labels = None
         embd_type_cnt = {}
@@ -164,11 +168,16 @@ class HPMPipeline(GenericPipeline):
 
         train_labels_list = train_df.label.unique().astype(int).tolist()
         num_labels = len(set(train_labels_list))
+        train_labels_dict = train_df.groupby("annotator_int_encoded").label.apply(list)
+        
+        loss_weights = self._create_loss_label_weights(train_labels_dict)
+        print("Loss weights: ", loss_weights)
 
         classifier = HyperLoRAModel.from_pretrained(
             pretrained_model_name_or_path=self.params.language_model_name,
             num_labels=num_labels,
             num_embeddings=embd_type_cnt["annotator"],
+            loss_weights=loss_weights,
             device=torch.device("cuda"),
         )
         # classifier = CustomHyperAdapterModel.from_pretrained(
