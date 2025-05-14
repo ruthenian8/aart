@@ -286,6 +286,7 @@ class HyperLoRAModel(PeftModel):
         lora_r: int = 2,
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
+        loss_weights: dict = None,
         device: torch.device = None,
     ) -> "HyperLoRAModel":
         """
@@ -326,6 +327,7 @@ class HyperLoRAModel(PeftModel):
             lora_model,
             peft_config,
             num_embeddings=num_embeddings,
+            loss_weights=loss_weights,
             device=device,
         )
         return hyper_peft_model
