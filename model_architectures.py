@@ -88,18 +88,29 @@ class MultiTaskClassifier(RobertaForSequenceClassification):
 
     def calculate_loss(self, labels, logits):
         task_loss_dict = dict()
-
+        total_l = 0
+        total_l_i = 0
         for task_label in self.task_labels:
             if (labels[task_label] == -1).all().item():
                 continue
             if labels[task_label].isnan().all().item():
                 continue
-            task_loss_dict[task_label] = self.losses[task_label](
-                logits[task_label][~torch.any(labels[task_label].isnan().view(-1, 1), dim=1)],
-                target=labels[task_label][~torch.any(labels[task_label].isnan().view(-1, 1), dim=1)])
+            # task_loss_dict[task_label] = self.losses[task_label](
+            l_val = self.losses[task_label](
+                logits[task_label][
+                    ~torch.any(labels[task_label].isnan().view(-1, 1), dim=1)
+                ],
+                target=labels[task_label][
+                    ~torch.any(labels[task_label].isnan().view(-1, 1), dim=1)
+                ],
+            )
+            if l_val.isnan():
+                continue
+            total_l += l_val
+            total_l_i += 1
             # (logits[task_label], target=labels[task_label])
-
-        total_loss = sum(task_loss_dict.values())
+        total_loss = total_l / total_l_i
+        # total_loss = sum(task_loss_dict.values())
         return total_loss
 
     def create_loss_functions(self):
