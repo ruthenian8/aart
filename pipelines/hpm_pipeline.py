@@ -147,11 +147,11 @@ class HPMPipeline(GenericPipeline):
         weights = labels.apply(
             lambda x: torch.tensor(
                 compute_class_weight(
-                    classes=sorted(list(set(x))),
+                    classes=np.array(sorted(list(set(x)))),
                     y=x,
                     class_weight='balanced'
                 ),
-                dtype=torch.bfloat16,
+                dtype=torch.float,
                 device="cuda"
             )
         )
