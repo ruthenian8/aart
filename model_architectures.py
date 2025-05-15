@@ -19,9 +19,10 @@ class MultiTaskClassifier(RobertaForSequenceClassification):
         print("@@@ nhid: ", nhid)
 
         self.task_labels = task_labels
-        self.linear_layer = dict()
-        for task in task_labels:
-            self.linear_layer[task] = nn.Linear(nhid, self.num_labels).to(torch.device('cuda'))
+        self.linear_layer = nn.ModuleDict({
+            task: nn.Linear(nhid, self.num_labels)
+            for task in task_labels
+        })
         self.balancing_weights = balancing_weights
         self.create_loss_functions()
         # Initialize weights and apply final processing
@@ -95,8 +96,8 @@ class MultiTaskClassifier(RobertaForSequenceClassification):
                 continue
             if labels[task_label].isnan().all().item():
                 continue
-            # task_loss_dict[task_label] = self.losses[task_label](
-            l_val = self.losses[task_label](
+            task_loss_dict[task_label] = self.losses[task_label](
+            # l_val = self.losses[task_label](
                 logits[task_label][
                     ~torch.any(labels[task_label].isnan().view(-1, 1), dim=1)
                 ],
@@ -104,13 +105,13 @@ class MultiTaskClassifier(RobertaForSequenceClassification):
                     ~torch.any(labels[task_label].isnan().view(-1, 1), dim=1)
                 ],
             )
-            if l_val.isnan():
-                continue
-            total_l += l_val
-            total_l_i += 1
+            # if l_val.isnan():
+            #     continue
+            # total_l += l_val
+            # total_l_i += 1
             # (logits[task_label], target=labels[task_label])
-        total_loss = total_l / total_l_i
-        # total_loss = sum(task_loss_dict.values())
+        # total_loss = total_l / total_l_i
+        total_loss = sum(task_loss_dict.values())
         return total_loss
 
     def create_loss_functions(self):
