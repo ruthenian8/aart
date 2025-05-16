@@ -95,7 +95,7 @@ class MultiTaskPipeline(GenericPipeline):
             # else:
             #     # each label weight is calculated separately
             #     labels = data[task_label].dropna().values.astype(int)
-            weight = np.ones(28)
+            weight = np.ones(self.params.num_classes)
             # weight = compute_class_weight(class_weight="balanced", classes=np.unique(labels), y=labels)
             if len(weight) == 1:
                 # if a label does not appear in the data
@@ -175,9 +175,6 @@ class MultiTaskPipeline(GenericPipeline):
             test_cnt_dict = test[true_label_col].squeeze().value_counts().to_dict()
             scores_dict['cnt_contributions_train'] = train_cnt_dict
             scores_dict['cnt_contributions_test'] = test_cnt_dict
-            assert (1 in train_cnt_dict) or (0 in train_cnt_dict)
-            scores_dict['cnt_train_positive'] = train_cnt_dict[1] if 1 in train_cnt_dict else 0
-            scores_dict['cnt_test_positive'] = test_cnt_dict[1] if 1 in test_cnt_dict else 0
             scores_dict["cnt_train"] = train[true_label_col].count()
             scores_dict["cnt_test"] = test[true_label_col].count()
             scores_dict['sim_to_maj'] = round(
