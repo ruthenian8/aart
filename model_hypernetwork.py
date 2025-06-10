@@ -99,12 +99,14 @@ class HyperNetworkV2(nn.Module):
         total_dim = speaker_dim + context_dim
         self.net_A = nn.Sequential(
             nn.Linear(total_dim, hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
+            nn.Dropout(0.25),
             nn.Linear(hidden_dim, r * in_dim),
         )
         self.net_B = nn.Sequential(
             nn.Linear(total_dim, hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
+            nn.Dropout(0.25),
             nn.Linear(hidden_dim, out_dim * r),
         )
         # Null-init for delta weights
