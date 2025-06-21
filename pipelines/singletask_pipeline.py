@@ -121,7 +121,10 @@ class SingleTaskPipeline(GenericPipeline):
     def _new_model(self, train_df):
         from transformers import AutoModelForSequenceClassification
         if self.params.approach == "single":
-            self.task_labels = ["labels"]
+            if self.params.embedding_colnames:
+                self.task_labels = self.params.embedding_colnames.split(",")
+            else:
+                self.task_labels = ["labels"]
         elif self.params.approach == "multi_task":
             self.task_labels = self.get_annotators(train_df)
 
