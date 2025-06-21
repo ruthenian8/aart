@@ -2,10 +2,10 @@ import torch
 import numpy as np
 import pandas as pd
 from pipelines.generic_pipeline import GenericPipeline
-from model_architectures import MultiTaskClassifier
 from transformers import RobertaForSequenceClassification
 from sklearn.utils.class_weight import compute_class_weight
 from utils import get_a_p_r_f
+from peft import PeftModel, LoraConfig, get_peft_model
 
 
 class SingleTaskRoberta(RobertaForSequenceClassification):
@@ -119,15 +119,28 @@ class SingleTaskPipeline(GenericPipeline):
         return class_weights
 
     def _new_model(self, train_df):
+        from transformers import AutoModelForSequenceClassification
         if self.params.approach == "single":
             self.task_labels = ["labels"]
         elif self.params.approach == "multi_task":
             self.task_labels = self.get_annotators(train_df)
 
-        classifier = SingleTaskRoberta.from_pretrained(
-            pretrained_model_name_or_path=self.params.language_model_name,
-            num_labels=self.params.num_classes,
+        model = AutoModelForSequenceClassification.from_pretrained(
+            self.params.language_model_name, num_labels=self.params.num_classes
         )
+
+        # Define LoRA configuration.
+        peft_config = LoraConfig(
+            r=2,
+            task_type="SEQ_CLS",
+            lora_alpha=32,
+            target_modules=["query", "value"],
+            fan_in_fan_out=False,
+            lora_dropout=0.25,
+        )
+
+        # Wrap the model with LoRA using PEFT.
+        classifier = get_peft_model(model, peft_config)
         return classifier
 
     def get_batches(self, df):
