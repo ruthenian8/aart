@@ -121,10 +121,7 @@ class SingleTaskPipeline(GenericPipeline):
     def _new_model(self, train_df):
         from transformers import AutoModelForSequenceClassification
         if self.params.approach == "single":
-            if self.params.embedding_colnames:
-                self.task_labels = self.params.embedding_colnames.split(",")
-            else:
-                self.task_labels = ["labels"]
+            self.task_labels = ["labels"]
         elif self.params.approach == "multi_task":
             self.task_labels = self.get_annotators(train_df)
 
@@ -139,7 +136,6 @@ class SingleTaskPipeline(GenericPipeline):
             lora_alpha=32,
             target_modules=["query", "value"],
             fan_in_fan_out=False,
-            lora_dropout=0.25,
         )
 
         # Wrap the model with LoRA using PEFT.
@@ -152,7 +148,7 @@ class SingleTaskPipeline(GenericPipeline):
         # replacing the unavailable labels with -1
         # -1 will then be masked when calculating the loss in the multi_task_loss function
         d = {
-            t: df["majority_label"].replace(np.nan, -1).astype(int)
+            t: df[self.params.embedding_colnames.split(",")].squeeze().replace(np.nan, -1).astype(int)
             for t in self.task_labels
         }
 
@@ -161,8 +157,8 @@ class SingleTaskPipeline(GenericPipeline):
 
         if "pair_id" in df:
             d["parent_text"] = df.prep_parent_text.squeeze().astype(str)
-
         ds = Dataset.from_dict(d)
+        print(next(iter(ds)))
         tokenized_ds = ds.map(lambda x: self.tokenize_function(x))
         tokenized_ds = tokenized_ds.remove_columns("text")
         if "pair_id" in df:
@@ -180,7 +176,7 @@ class SingleTaskPipeline(GenericPipeline):
             scores_dict_test["precision"],
             scores_dict_test["recall"],
             scores_dict_test["f1"],
-        ) = get_a_p_r_f(labels=test["majority_label"], preds=test["majority_pred"])
+        ) = get_a_p_r_f(labels=test[self.params.embedding_colnames.split(",")], preds=test["majority_pred"])
 
         return scores_dict_test, test
 
