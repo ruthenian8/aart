@@ -1,6 +1,7 @@
+### This repository contains the code for the paper: [Hypernetworks for Perspectivist Adaptation](#).
 
-This repository contains the code for the paper: [Hypernetworks for Perspectivist Adaptation](#).
 The code in this repository extends the abstractions from AART: (https://github.com/negar-mokhberian/aart).
+
 If you copy or use the code, consider citing both our paper and AART.
 
 ---
@@ -17,7 +18,7 @@ pip install -r requirements.txt
 
 ---
 
-## 🏗️ Running AART
+## Running
 
 You can explore available command-line arguments using:
 
@@ -31,11 +32,11 @@ python main.py --data_name my_dataset --approach NHW
 ```
 
 - `--data_name`: A custom name for your dataset.
-- `--approach`: `"HNW"`.
+- `--approach`: `"HPM"`.
 
 ---
 
-## 📂 Dataset Format
+## Dataset Format
 
 The dataset should be stored under:
 
