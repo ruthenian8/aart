@@ -2,9 +2,6 @@ import os
 from datetime import datetime
 import pytz
 import numpy as np
-from pipelines.multitask_pipeline import MultiTaskPipeline
-from pipelines.aart_pipeline import AARTPipeline
-from pipelines.singletask_pipeline import SingleTaskPipeline
 from pipelines.hpm_pipeline import HPMPipeline
 
 
@@ -119,13 +116,7 @@ def parse_args():
 
 
 def get_pipeline(params):
-    if params.approach == "multi_task":
-        return MultiTaskPipeline(params)
-    elif params.approach == "single":
-        return SingleTaskPipeline(params)
-    elif params.approach == "aart":
-        return AARTPipeline(params)
-    elif params.approach == "hpm":
+    if params.approach == "hpm":
         return HPMPipeline(params)
 
 

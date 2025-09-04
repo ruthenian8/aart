@@ -3,7 +3,8 @@ import numpy as np
 import pandas as pd
 from transformers import Trainer
 from pipelines.generic_pipeline import GenericPipeline
-from model_architectures import HyperPeftModel, CustomHyperAdapterModel, HyperLoRAModel
+# from model_architectures import HyperPeftModel, CustomHyperAdapterModel
+from model_architectures import HyperLoRAModel
 from sklearn.utils.class_weight import compute_class_weight
 from utils import get_a_p_r_f
 
