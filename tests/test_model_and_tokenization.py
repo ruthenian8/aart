@@ -15,7 +15,7 @@ def _hf_hub_available():
         from transformers import AutoTokenizer
         AutoTokenizer.from_pretrained("roberta-base")
         return True
-    except Exception:
+    except (OSError, ConnectionError, RuntimeError):
         return False
 
 

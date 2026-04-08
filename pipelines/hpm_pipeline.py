@@ -77,7 +77,10 @@ class HPMPipeline(GenericPipeline):
         return df.copy()
 
     def encode_values(self, train_df, dev_df, test_df):
-        encoding_colnames = list(self.params.embedding_colnames)
+        encoding_colnames = self.params.embedding_colnames
+        if not isinstance(encoding_colnames, list):
+            encoding_colnames = []
+        encoding_colnames = list(encoding_colnames)  # copy to avoid mutating params
         if "annotator" not in encoding_colnames:
             encoding_colnames = encoding_colnames + ["annotator"]
         logger.info("Encoding columns: %s", encoding_colnames)

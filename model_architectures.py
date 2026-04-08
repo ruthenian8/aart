@@ -159,7 +159,7 @@ class HyperLoRAModel(PeftModel):
         # Generate LoRA weights for unique annotator IDs only
         A_unique, B_unique = self.hypernet(unique_ids)
 
-        logits_list = [None] * batch
+        logits = torch.zeros(batch, self.base_model.config.num_labels, device=self.device)
 
         for uid_idx in range(unique_ids.size(0)):
             # Find all batch indices sharing this annotator ID
@@ -178,11 +178,7 @@ class HyperLoRAModel(PeftModel):
                     sub_kwargs["labels"] = labels[batch_indices].to(self.device)
 
                 out = self.base_model(*args, **sub_kwargs).logits
-                for i, idx in enumerate(batch_indices):
-                    logits_list[idx.item()] = out[i : i + 1]
-
-        # stack back to (B, num_labels)
-        logits = torch.cat(logits_list, dim=0)
+                logits[batch_indices] = out
 
         # Prepend annotator IDs to logits for metric computation
         catted = torch.cat([HN_ids.unsqueeze(-1), logits], dim=-1)

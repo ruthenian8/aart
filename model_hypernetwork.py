@@ -67,12 +67,13 @@ class HyperNetworkV2(nn.Module):
         A_flat = self.net_A(flat).view(batch, num_mod, self.r, self.in_dim)
         B_flat = self.net_B(flat).view(batch, num_mod, self.out_dim, self.r)
 
-        # Shape assertions for debugging
-        assert A_flat.shape == (batch, num_mod, self.r, self.in_dim), (
-            f"Expected A shape ({batch}, {num_mod}, {self.r}, {self.in_dim}), got {A_flat.shape}"
-        )
-        assert B_flat.shape == (batch, num_mod, self.out_dim, self.r), (
-            f"Expected B shape ({batch}, {num_mod}, {self.out_dim}, {self.r}), got {B_flat.shape}"
-        )
+        # Shape assertions for debugging (disabled when running with python -O)
+        if __debug__:
+            assert A_flat.shape == (batch, num_mod, self.r, self.in_dim), (
+                f"Expected A shape ({batch}, {num_mod}, {self.r}, {self.in_dim}), got {A_flat.shape}"
+            )
+            assert B_flat.shape == (batch, num_mod, self.out_dim, self.r), (
+                f"Expected B shape ({batch}, {num_mod}, {self.out_dim}, {self.r}), got {B_flat.shape}"
+            )
 
         return A_flat, B_flat
