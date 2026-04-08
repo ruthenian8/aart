@@ -1,14 +1,33 @@
 import os
+import re
+import logging
 from datetime import datetime
+from pathlib import Path
+
 import pytz
-import numpy as np
+
+from params import Params
 from pipelines.hpm_pipeline import HPMPipeline
+
+logger = logging.getLogger(__name__)
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+
+def slugify_experiment_name(name: str, max_length: int = 200) -> str:
+    """Sanitize a string for safe use in filesystem paths."""
+    name = re.sub(r"[/:,\s]+", "_", name)
+    name = re.sub(r"_+", "_", name)
+    name = name.strip("_")
+    return name[:max_length]
 
 
 def parse_args():
     import argparse
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Hypernetworks for Perspectivist Adaptation (HPM)"
+    )
 
     parser.add_argument(
         "--data_name", default=None, type=str, required=True, help="The corpus name"
@@ -19,7 +38,7 @@ def parse_args():
         default=None,
         type=str,
         required=True,
-        help="The transformer model name e.g. answerdotai/ModernBERT-base, roberta-base or cardiffnlp/twitter-roberta-base-offensive",
+        help="The transformer model name, e.g. roberta-base",
     )
 
     parser.add_argument(
@@ -27,8 +46,8 @@ def parse_args():
         default=None,
         type=str,
         required=True,
-        choices=["single", "multi_task", "aart", "hpm"],
-        help="The name of the model to be trained from the list: single, multi_task, summing_embs.",
+        choices=["hpm"],
+        help="The modeling approach. Currently only 'hpm' is supported.",
     )
 
     parser.add_argument(
@@ -51,28 +70,15 @@ def parse_args():
 
     parser.add_argument("--skip_test", action="store_true")
 
-    # parser.add_argument("--top_n_annotators",
-    #                     default=-1,
-    #                     type=int,
-    #                     help="size of the subset of annotators with maximum number of annotations "
-    #                          "to be considered in the model training"
-    #                     )
     parser.add_argument(
         "--majority_inference",
         action="store_true",
         help="whether or not to infer the majority vote from the trained model",
     )
 
-    # parser.add_argument("--lambda1",
-    #                     default=np.nan,
-    #                     type=float,
-    #                     help="coefficient
-    #                     for l1 regularizing the annotator embeddings"
-    #                     )
-
     parser.add_argument(
         "--lambda2",
-        default=np.nan,
+        default=0.0,
         type=float,
         help="coefficient for l2 regularizing the annotator embeddings",
     )
@@ -91,12 +97,6 @@ def parse_args():
         help="comma separated string of columns to make embeddings for, e.g. annotator,race,age...",
     )
 
-    # parser.add_argument("--epoch_freeze_bert",
-    #                     default=50,
-    #                     type=int,
-    #                     help="which epoch start to freeze bert."
-    #                     )
-
     parser.add_argument(
         "--sort_instances_by",
         default="",
@@ -108,22 +108,33 @@ def parse_args():
         "--num_fake_annotators",
         type=int,
         default=0,
-        help="number of fake annotators to add. If N is given then will add N maj_vote fake annotators and N opp_maj_vote fake annotators and each are labeling 1/N of data randomly selected. ",
+        help="number of fake annotators to add.",
     )
 
     args = parser.parse_args()
+    # Normalize approach to lowercase
+    args.approach = args.approach.lower()
     return args
 
 
 def get_pipeline(params):
     if params.approach == "hpm":
         return HPMPipeline(params)
+    raise ValueError(
+        f"Unsupported approach '{params.approach}'. Only 'hpm' is currently supported."
+    )
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
     main_args = parse_args()
-    pipeline = get_pipeline(main_args)
-    print(pipeline)
+    params = Params.from_namespace(main_args)
+    pipeline = get_pipeline(params)
+    logger.info("Pipeline: %s", pipeline)
 
     #############################################################################
     ############################## Experiments ##################################
@@ -138,33 +149,35 @@ def main():
     score["params"] = pipeline.get_param_combinations(
         ": ", exclude_list=["random_state", "balance_annotator_weights", "lambda1"]
     )
-    score["rand_seed"] = main_args.random_state
-    score["approach"] = main_args.approach
+    score["rand_seed"] = params.random_state
+    score["approach"] = params.approach
 
     pacific = pytz.timezone("US/Pacific")
     sa_time = datetime.now(pacific)
-    name_time = sa_time.strftime("%m%d%y-%H:%M")
-    score["time"] = name_time
+    name_time = sa_time.strftime("%m%d%y-%H%M")
 
-    results_dir = f"./results/{main_args.approach}/{main_args.data_name}"
-    os.makedirs(results_dir, exist_ok=True)
-    print("Saving results to ", results_dir)
+    results_dir = REPO_ROOT / "results" / params.approach / params.data_name
+    results_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Saving results to %s", results_dir)
 
-    if main_args.skip_test:
-        scores_file = (
-            f"{results_dir}/dev_scores_classification_{main_args.approach}.csv"
-        )
+    if params.skip_test:
+        scores_file = results_dir / f"dev_scores_classification_{params.approach}.csv"
     else:
-        test_predictions_dir = f"{results_dir}/predictions_{name_time}_{main_args.approach}_{main_args.random_state}_{main_args.embedding_colnames}.csv"
-        test_predictions_dir = test_predictions_dir.replace(":", "")
-        print("predictions dir is: ", test_predictions_dir)
-        test_preds_df.to_csv(test_predictions_dir, index=False)
-        scores_file = f"{results_dir}/scores_classification_{main_args.approach}_{main_args.embedding_colnames}.csv"
+        pred_name = slugify_experiment_name(
+            f"predictions_{name_time}_{params.approach}_{params.random_state}_{params.embedding_colnames}"
+        )
+        test_predictions_path = results_dir / f"{pred_name}.csv"
+        logger.info("predictions path: %s", test_predictions_path)
+        test_preds_df.to_csv(test_predictions_path, index=False)
+        scores_name = slugify_experiment_name(
+            f"scores_classification_{params.approach}_{params.embedding_colnames}"
+        )
+        scores_file = results_dir / f"{scores_name}.csv"
 
-    print("Scores dir is: ", scores_file)
+    logger.info("Scores path: %s", scores_file)
 
     # the scores of each test is appended as a row to the scores file
-    if os.path.exists(scores_file):
+    if scores_file.exists():
         score.to_csv(scores_file, header=False, index=False, mode="a")
     else:
         score.to_csv(scores_file, index=False)

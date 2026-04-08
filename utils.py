@@ -1,9 +1,28 @@
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def load_compute_metrics(pipeline_obj):
-    if "HPM" in str(type(pipeline_obj)):
+    """Return the appropriate compute_metrics callable for the pipeline's approach."""
+    approach = getattr(pipeline_obj, "params", None)
+    if approach is not None:
+        approach = approach.approach
+    if approach == "hpm":
         return _compute_metrics_hpm
+    raise ValueError(
+        f"No compute_metrics function registered for approach '{approach}'"
+    )
+
+
+def extract_model_logits(predictions) -> np.ndarray:
+    """Extract raw logits from Trainer.predict() output, handling tuple wrapping."""
+    raw = predictions.predictions
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    return raw
 
 
 def _compute_metrics_hpm(eval_pred):
@@ -30,7 +49,14 @@ def _compute_metrics_hpm(eval_pred):
         if len(annotator_labels) > 5:
             all_f1s.append(f)
 
-    metric_res["macro_f1"] = np.mean(all_f1s).round(3)
+    if all_f1s:
+        metric_res["macro_f1"] = np.mean(all_f1s).round(3)
+    else:
+        # Fallback: use micro F1 when no annotator has > 5 examples
+        logger.warning(
+            "No annotator with > 5 examples found for macro F1; falling back to micro F1."
+        )
+        metric_res["macro_f1"] = metric_res["micro_f1"]
     return metric_res
 
 
