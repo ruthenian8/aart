@@ -261,6 +261,12 @@ class GenericPipeline(abc.ABC):
         logger.info("Trainable parameters: %d", trainer.get_num_trainable_parameters())
         trainer.train()
 
+        # Save annotator representations (no-op in base class; overridden by HPMPipeline)
+        repr_output_dir = (
+            REPO_ROOT / "results" / self.params.approach / self.params.data_name
+        )
+        self.save_representations(model, repr_output_dir)
+
         self.print_embs_info(model)
 
         logger.info("Dev predictions (individually):")
@@ -429,6 +435,19 @@ class GenericPipeline(abc.ABC):
             truncation=True,
             max_length=self.params.max_len,
         )
+
+    def save_representations(self, model, output_dir: Path) -> None:
+        """Save annotator (or other) representations for the trained model.
+
+        The default implementation is a no-op.  Subclasses that expose
+        learnable annotator embeddings (e.g. HPMPipeline) should override
+        this to persist those vectors so they can be inspected or visualised
+        post-training.
+
+        Args:
+            model: The trained model object.
+            output_dir: Directory under which representations are saved.
+        """
 
     def print_embs_info(self, model):
         pass

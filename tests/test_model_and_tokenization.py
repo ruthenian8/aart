@@ -259,3 +259,74 @@ class TestMajorityLabelBias:
         assert real_only3[4] == True
         # Naive: 1/3 = 0.33 → False (WRONG — incorrectly classifies as negative majority)
         assert naive3[4] == False  # this is the bug we fixed
+
+
+class TestSaveRepresentations:
+    """Test save_representations writes the expected files."""
+
+    def test_save_representations_writes_npy_and_json(self, tmp_path):
+        """save_representations should write .npy and .json with correct shapes."""
+        import json
+        from types import SimpleNamespace
+        from pathlib import Path
+
+        sys.path.insert(0, str(REPO_ROOT))
+        from pipelines.hpm_pipeline import HPMPipeline
+
+        # Build a minimal mock model that exposes the same attribute path
+        # as HyperLoRAModel: model.hypernet.speaker_emb
+        num_annotators = 5
+        speaker_dim = 8
+        emb_weight = torch.randn(num_annotators, speaker_dim)
+        speaker_emb = torch.nn.Embedding(num_annotators, speaker_dim)
+        speaker_emb.weight = torch.nn.Parameter(emb_weight)
+        hypernet = SimpleNamespace(speaker_emb=speaker_emb)
+        mock_model = SimpleNamespace(hypernet=hypernet)
+
+        # Build a minimal pipeline stub (bypass __init__) with enough state
+        pipeline = object.__new__(HPMPipeline)
+        pipeline.data_dict = {
+            "annotator_map": {0: "alice", 1: "bob", 2: "carol", 3: "dave", 4: "eve"}
+        }
+
+        output_dir = tmp_path / "representations"
+        pipeline.save_representations(mock_model, output_dir)
+
+        # .npy file
+        npy_path = output_dir / "annotator_representations.npy"
+        assert npy_path.exists(), "annotator_representations.npy was not created"
+        saved = np.load(str(npy_path))
+        assert saved.shape == (num_annotators, speaker_dim)
+        np.testing.assert_allclose(
+            saved, emb_weight.detach().cpu().float().numpy(), rtol=1e-5
+        )
+
+        # .json map file
+        json_path = output_dir / "annotator_id_map.json"
+        assert json_path.exists(), "annotator_id_map.json was not created"
+        loaded_map = json.loads(json_path.read_text())
+        assert loaded_map["0"] == "alice"
+        assert loaded_map["4"] == "eve"
+
+    def test_save_representations_no_map(self, tmp_path):
+        """save_representations should still write .npy when annotator_map is absent."""
+        from types import SimpleNamespace
+        from pipelines.hpm_pipeline import HPMPipeline
+
+        num_annotators = 3
+        speaker_dim = 4
+        speaker_emb = torch.nn.Embedding(num_annotators, speaker_dim)
+        hypernet = SimpleNamespace(speaker_emb=speaker_emb)
+        mock_model = SimpleNamespace(hypernet=hypernet)
+
+        pipeline = object.__new__(HPMPipeline)
+        pipeline.data_dict = {}  # no annotator_map
+
+        output_dir = tmp_path / "repr_no_map"
+        pipeline.save_representations(mock_model, output_dir)
+
+        npy_path = output_dir / "annotator_representations.npy"
+        assert npy_path.exists()
+        # .json should NOT be created when map is absent
+        json_path = output_dir / "annotator_id_map.json"
+        assert not json_path.exists()

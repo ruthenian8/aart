@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -149,6 +151,49 @@ class HPMPipeline(GenericPipeline):
     def _create_loss_label_weights(self, labels: pd.Series) -> dict:
         # Not used in the current HPM path; kept as abstract method implementation.
         return {}
+
+    def save_representations(self, model, output_dir: Path) -> None:
+        """Save annotator speaker embeddings from the hypernetwork as numpy vectors.
+
+        Two files are written under *output_dir*:
+
+        * ``annotator_representations.npy`` — float32 array of shape
+          ``(num_annotators, speaker_dim)`` where row *i* is the embedding
+          for annotator integer-index *i*.
+        * ``annotator_id_map.json`` — dict mapping each integer index (as a
+          string key) to the original annotator name/identifier, sourced from
+          the label-encoder mapping built during ``encode_values()``.
+
+        Args:
+            model: Trained ``HyperLoRAModel`` instance.
+            output_dir: Directory to write files into (created if absent).
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Extract speaker embedding matrix: (num_annotators, speaker_dim)
+        emb_weight: np.ndarray = (
+            model.hypernet.speaker_emb.weight.detach().cpu().float().numpy()
+        )
+
+        repr_path = output_dir / "annotator_representations.npy"
+        np.save(repr_path, emb_weight)
+        logger.info(
+            "Saved annotator representations %s → %s", emb_weight.shape, repr_path
+        )
+
+        # Save the integer-index → annotator-name mapping if available
+        annotator_map = self.data_dict.get("annotator_map", {})
+        if annotator_map:
+            map_path = output_dir / "annotator_id_map.json"
+            # JSON requires string keys
+            json_map = {str(k): str(v) for k, v in annotator_map.items()}
+            map_path.write_text(json.dumps(json_map, indent=2, ensure_ascii=False))
+            logger.info("Saved annotator id map (%d entries) → %s", len(json_map), map_path)
+        else:
+            logger.warning(
+                "annotator_map not found in data_dict; annotator_id_map.json was not written"
+            )
 
     def _new_model(self, train_df):
         self.task_labels = None
