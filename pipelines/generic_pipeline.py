@@ -1,15 +1,24 @@
-import torch
-import socket
+import abc
+import logging
+import math
+import os
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from params import params
+import torch
 from dataclasses import dataclass, field
 from transformers import AutoTokenizer, TrainingArguments, EarlyStoppingCallback
+
+from params import Params
 from utils import load_compute_metrics
 
+logger = logging.getLogger(__name__)
 
-def set_seed(seed):
-    import os
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def set_seed(seed, deterministic=True):
     import random
     import transformers
 
@@ -21,22 +30,24 @@ def set_seed(seed):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.enabled = True
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = True
+    if deterministic:
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+    else:
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
 
 
 @dataclass
 class MyTrainingArguments(TrainingArguments):
-    # lambda1: float = field(default=np.nan,
-    #                        metadata={"help": "lambda1 coefficient for l1_norm of anntoator embeddings in the loss"})
     lambda2: float = field(
-        default=np.nan,
+        default=0.0,
         metadata={
             "help": "lambda2 coefficient for l2_norm of annotator embeddings in the loss"
         },
     )
     contrastive_alpha: float = field(
-        default=np.nan,
+        default=0.0,
         metadata={
             "help": "The coefficient for contrastive loss computed for annotator embeddings"
         },
@@ -44,57 +55,55 @@ class MyTrainingArguments(TrainingArguments):
     shuffle_train_data: bool = field(
         default=True, metadata={"help": "Whether to shuffle input data"}
     )
-    # epoch_freeze_bert: int = field(default=2,
-    #                        metadata={"help": "which epoch to start freezing bert"})
-
-    # ratio_inactive_steps: float = field(default=1.0,
-    #                                     metadata={"help": "ratio of steps that lambda2 is 0.0"})
 
 
-class GenericPipeline:
-    """Creates a Classifier instance for training single, multi-task, and AART models."""
+class GenericPipeline(abc.ABC):
+    """Abstract base class for classifier pipelines."""
 
-    def __init__(self, main_params):
-        print("*** Cuda info ***")
-        print("hostname", socket.gethostname())
-        print("torch.cuda.is_available()", torch.cuda.is_available())
-        print(
-            "torch.cuda.current_device()", torch.cuda.current_device()
-        )  # The ID of the current GPU.
-        print(
-            "torch.cuda.get_device_name(id)", torch.cuda.get_device_name(id)
-        )  # The name of the specified GPU, where id is an integer.
-        print(
-            "torch.cuda.device_count()", torch.cuda.device_count()
-        )  # The amount of GPUs that are accessible.
-        print(
-            "torch.cuda.get_device_properties(torch.device('cuda'))",
-            torch.cuda.get_device_properties(torch.device("cuda")),
-        )
+    def __init__(self, params: Params):
+        # Resolve device
+        if params.device:
+            self.device = torch.device(params.device)
+        elif torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        else:
+            self.device = torch.device("cpu")
 
-        set_seed(main_params.random_state)
-        self.params = params()
-        self.params.update(main_params)
-        print(self.params)
+        logger.info("Device: %s", self.device)
+        if self.device.type == "cuda":
+            gpu_id = torch.cuda.current_device()
+            logger.info(
+                "CUDA device %d: %s", gpu_id, torch.cuda.get_device_name(gpu_id)
+            )
+            logger.info("GPU count: %d", torch.cuda.device_count())
+
+        set_seed(params.random_state, deterministic=params.deterministic)
+        self.params = params
+        logger.info("Params: %s", self.params)
         self.data_dict = self.read_data()
-        # self.weights = list()
-        # todo self.language_model_name = "answerdotai/ModernBERT-base"    # "cardiffnlp/twitter-roberta-base-offensive" if self.params.data_name in ["large","risk"] else "roberta-base"
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.params.language_model_name)
-        self.tokenizations = {}
 
         self.compute_metrics_function = load_compute_metrics(self)
-        print("params of CustomClassifier:")
-        print([(k, v) for k, v in self.params.__dict__.items()])
+        logger.info(
+            "Pipeline initialized: %s",
+            [(k, v) for k, v in self.params.__dict__.items()],
+        )
 
-    def get_param_combinations(self, sep1="_", sep2=", ", exclude_list=[]):
+    def get_param_combinations(self, sep1="_", sep2=", ", exclude_list=None):
+        if exclude_list is None:
+            exclude_list = []
         exclude_list = exclude_list + [
             "skip_test",
             "skip_majority",
             "use_majority_weight",
             "num_epochs",
             "early_stopping_patience",
-        ]  # "max_len",
+            "device",
+            "num_tokenization_workers",
+            "deterministic",
+            "unknown_annotator_policy",
+        ]
         param_combinations = sep2.join(
             key + sep1 + str(val)
             for key, val in self.params.__dict__.items()
@@ -104,28 +113,22 @@ class GenericPipeline:
         return param_combinations
 
     def read_data(self):
-        print("~~~~ Reading data ", self.params.data_name)
+        logger.info("Reading data: %s", self.params.data_name)
         data_name_for_path = self.params.data_name
-        if self.params.approach == "single":
-            data_path = f"./data/multi_task/{data_name_for_path}"
-        else:
-            data_path = f"./data/{self.params.approach}/{data_name_for_path}"
+        data_path = REPO_ROOT / "data" / self.params.approach / data_name_for_path
 
         data_dict = {}
 
-        if self.params.approach == "aart" or self.params.approach == "hpm":
-            if (
-                type(self.params.embedding_colnames) == str
-                and self.params.embedding_colnames.strip() == ""
-            ):
+        if isinstance(self.params.embedding_colnames, str):
+            if self.params.embedding_colnames.strip() == "":
                 self.params.embedding_colnames = []
             else:
                 self.params.embedding_colnames = self.params.embedding_colnames.split(
                     ","
                 )
 
-        df = pd.read_csv(f"{data_path}/all_data.csv")
-        if self.params.approach == "aart" or self.params.approach == "hpm":
+        df = pd.read_csv(data_path / "all_data.csv")
+        if self.params.embedding_colnames:
             df[self.params.embedding_colnames] = df[
                 self.params.embedding_colnames
             ].replace(["Do Not Wish to Answer", "MISSING"], "unknown")
@@ -137,30 +140,31 @@ class GenericPipeline:
             df["label"] = df["label"].astype(int)
 
         self.instance_id_col = "pair_id" if "pair_id" in df.columns else "text_id"
-        print("Instance id is : ", self.instance_id_col)
+        logger.info("Instance id column: %s", self.instance_id_col)
         df_annotators = self.get_annotators(df)
-        df[f"majority_label"] = self.calculate_majority(df, annotators=df_annotators)
+        df["majority_label"] = self.calculate_majority(df, annotators=df_annotators)
         if "disagreement_level" not in df.columns:
-            df[f"disagreement_level"] = self.calculate_continous_disagreements(
+            df["disagreement_level"] = self.calculate_continous_disagreements(
                 df=df, label_or_pred_col="label"
             )
-            df[f"disagreement_level"] = df[f"disagreement_level"].round(1)
+            df["disagreement_level"] = df["disagreement_level"].round(1)
 
         df = self.add_fake_annotators(df)
 
+        splits_path = REPO_ROOT / "splits" / data_name_for_path
         train_idx = (
-            open(f"../splits/{data_name_for_path}/train_{self.params.random_state}.txt")
-            .read()
+            (splits_path / f"train_{self.params.random_state}.txt")
+            .read_text()
             .splitlines()
         )
         dev_idx = (
-            open(f"../splits/{data_name_for_path}/dev_{self.params.random_state}.txt")
-            .read()
+            (splits_path / f"dev_{self.params.random_state}.txt")
+            .read_text()
             .splitlines()
         )
         test_idx = (
-            open(f"../splits/{data_name_for_path}/test_{self.params.random_state}.txt")
-            .read()
+            (splits_path / f"test_{self.params.random_state}.txt")
+            .read_text()
             .splitlines()
         )
 
@@ -198,55 +202,9 @@ class GenericPipeline:
             or data_dict["test"].empty
         )
 
-        print(f"Approach name is {self.params.approach}")
+        logger.info("Train: %d, Dev: %d, Test: %d",
+                     len(data_dict["train"]), len(data_dict["dev"]), len(data_dict["test"]))
         return data_dict
-
-    def plot_text_embs(self, df, language_model, name_plot):
-        from umap import UMAP
-        import seaborn as sns
-        import matplotlib.pyplot as plt
-
-        train_dataset = self.get_batches(df)
-        color_col = df["disagreement_level"]
-
-        text_embeddings = []
-        for i in range(0, len(color_col), 20):
-            # print(i)
-            input_ids = torch.tensor(
-                train_dataset["input_ids"][i : i + 20], device="cuda"
-            )
-            attention_masks = torch.tensor(
-                train_dataset["attention_mask"][i : i + 20], device="cuda"
-            )
-            outputs = language_model(
-                input_ids=input_ids, attention_mask=attention_masks
-            )
-            # input_ids = input_ids.detach().cpu()
-            # attention_masks = attention_masks.detach().cpu()
-            hidden = outputs.last_hidden_state[:, 0, :].detach().cpu().numpy()
-            text_embeddings.append(hidden)
-
-        text_embeddings = np.concatenate(text_embeddings, axis=0)
-
-        umap_model = UMAP(n_neighbors=10, n_components=2, min_dist=0.0, metric="cosine")
-        two_d_results = umap_model.fit_transform(text_embeddings)
-
-        plt.figure(figsize=(16, 10))
-        print(two_d_results.shape)
-        sns.scatterplot(
-            x=two_d_results[:, 0],
-            y=two_d_results[:, 1],
-            hue=color_col,
-            legend="full",
-            alpha=0.7,
-        )
-
-        plt.savefig(
-            f"{name_plot}_{self.params.data_name}_{self.params.random_state}_embeddings.png"
-        )
-
-    def print_embs_info(self, model):
-        pass
 
     def run(self):
         score, test_preds_df = self.train_and_test_on_splits(
@@ -258,24 +216,23 @@ class GenericPipeline:
         return score, test_preds_df
 
     def train_and_test_on_splits(self, train, dev, test):
-        print("train shape: ", train.shape)
-        print("dev shape: ", dev.shape)
-        print("test shape: ", test.shape)
+        logger.info("Train shape: %s, Dev shape: %s, Test shape: %s",
+                     train.shape, dev.shape, test.shape)
         scores = []
-        if self.params.approach == "aart" or self.params.approach == "hpm":
-            train, dev, test = self.encode_values(train.copy(), dev.copy(), test.copy())
+        train, dev, test = self.encode_values(train.copy(), dev.copy(), test.copy())
 
-        print("Name of pretrained language model: ", self.params.language_model_name)
+        logger.info("Language model: %s", self.params.language_model_name)
         model = self._new_model(train_df=train)
-        # ,language_model=self.language_model_name)
         train_dataset = self.get_batches(train)
         dev_dataset = self.get_batches(dev)
-        # param_combinations = )
-        print("*** PARAMS *** \n", self.get_param_combinations(sep1=": "))
+        logger.info("Params: %s", self.get_param_combinations(sep1=": "))
         self.print_embs_info(model)
 
-        epoch_steps = int(train.shape[0] / self.params.batch_size)
-        print("Epoch Steps: ", epoch_steps)
+        # Robust step calculation: prevent zero steps on small datasets
+        epoch_steps = max(1, math.ceil(len(train) / self.params.batch_size))
+        save_eval_steps = max(1, epoch_steps // 2)
+        logger.info("Epoch steps: %d, save/eval steps: %d", epoch_steps, save_eval_steps)
+
         param_combinations = self.get_param_combinations(
             exclude_list=[
                 "balance_annotator_weights",
@@ -285,9 +242,13 @@ class GenericPipeline:
                 "max_len",
             ]
         )
-        saving_models_dir = f"./saved_models/{self.params.approach}/{self.params.data_name}_{self.params.embedding_colnames}/{param_combinations}"
+        saving_models_dir = str(
+            REPO_ROOT / "saved_models" / self.params.approach
+            / f"{self.params.data_name}_{self.params.embedding_colnames}"
+            / param_combinations
+        )
         training_args = self.get_trainingargs(
-            num_save_eval_log_steps=int(epoch_steps / 2),
+            num_save_eval_log_steps=save_eval_steps,
             saving_models_dir=saving_models_dir,
         )
 
@@ -297,50 +258,12 @@ class GenericPipeline:
             dev_dataset=dev_dataset,
             training_args=training_args,
         )
-        print(trainer.args)
-        print("n parameters: ")
-        print(trainer.get_num_trainable_parameters())
-        # self.plot_text_embs(df=train.drop_duplicates(self.instance_id_col).copy(), language_model=model.roberta,
-        #                     name_plot="before")
+        logger.info("Trainable parameters: %d", trainer.get_num_trainable_parameters())
         trainer.train()
-        # print(trainer.state)
-        # self.plot_text_embs(df=train.drop_duplicates(self.instance_id_col).copy(), language_model=model.roberta,
-        #                     name_plot="after")
 
         self.print_embs_info(model)
-        if self.params.approach == "aart":
-            for k in model.emb_names:
-                import pickle
-                import json
-                import os
 
-                embs_dir = f"./results/{self.params.approach}/{self.params.data_name}/embeddings/emb_cols {' '.join(self.params.embedding_colnames)}"
-                os.makedirs(embs_dir, exist_ok=True)
-                print(
-                    f"saving embeddings to {embs_dir}/{k}_embeddings_{param_combinations}_rand_seed_{self.params.random_state}.pkl"
-                )
-
-                emb_file_name = f"{embs_dir}/{k}_embeddings_{param_combinations.replace('/', '_')[:30]}_rand_seed_{self.params.random_state}.pkl"
-                # with open(emb_file_name, 'w') as file:
-                #     for j in train[f'{k}_int_encoded'].unique():
-                #         json.dump({self.data_dict[f'{k}_map'][j]: getattr(model, f"{k}_embeddings").weight.detach().cpu().numpy()[j, :]}, file)
-                #         file.write('\n')
-
-                annot_embs_dict = {
-                    self.data_dict[f"{k}_map"][j]: getattr(model, f"{k}_embeddings")
-                    .weight.to(torch.float32)
-                    .detach()
-                    .cpu()
-                    .numpy()[j, :]
-                    for j in train[f"{k}_int_encoded"].unique()
-                }
-
-                with open(emb_file_name, "wb+") as fp:
-                    pickle.dump(annot_embs_dict, fp)
-                    print(f"{k} embeddings saved successfully to file")
-                print("~" * 30)
-
-        print("~~~~~ Dev Masked Preds (individually):")
+        logger.info("Dev predictions (individually):")
         dev_preds = trainer.predict(dev_dataset)
         scores_dict = {k[5:]: v for k, v in dev_preds.metrics.items()}
 
@@ -354,10 +277,7 @@ class GenericPipeline:
         ) = self.calculate_disagreement(df=dev)
 
         scores_dict["rand_seed"] = self.params.random_state
-        # scores_dict['early_stop_epoch'] = float(trainer.state.best_model_checkpoint.split("-")[-1]) / epoch_steps
-        # print("Early Stop Epoch: ", scores_dict['early_stop_epoch'])
-        print(scores_dict)
-        # scores_dict = {k:v.replace("test", "dev") for k,v in scores_dict.items()}
+        logger.info("Dev scores: %s", scores_dict)
         scores.append(scores_dict)
 
         if not self.params.skip_test:
@@ -368,44 +288,18 @@ class GenericPipeline:
             )
             test_df["rand_seed"] = self.params.random_state
             scores = scores + scores_test
-            scores_tmp = None
         else:
             test_df = None
-            # import os
-            print("Removing the saved models at: ", saving_models_dir)
-            # os.rmdir(saving_models_dir)
+            logger.info("Removing saved models at: %s", saving_models_dir)
             import shutil
+            shutil.rmtree(saving_models_dir, ignore_errors=True)
 
-            shutil.rmtree(saving_models_dir)
-
-        if self.params.approach == "aart":
-            for k in model.emb_names:
-                print("~" * 30)
-                print(k)
-                # mean_l1 = torch.norm(getattr(model, f"{k}_embeddings").weight.detach(), p=1, dim=1)#.mean().item()
-                l1 = torch.norm(
-                    getattr(model, f"{k}_embeddings").weight.detach(), p=1, dim=1
-                )
-                print("~" * 30)
-
-                for s in scores:
-                    if s["type"] in ["dev", "test"]:
-                        s[f"l1_{k}"] = round(l1.mean().item(), 2)
-                    else:
-                        for i in range(len(self.data_dict[f"{k}_map"])):
-                            if self.data_dict[f"{k}_map"][i] == s["type"]:
-                                s[f"l1_{k}"] = round(l1[i].item(), 2)
-                                break
         return scores, test_df
 
     def get_trainer(self, model, train_dataset, dev_dataset, training_args):
         from transformers import Trainer
 
         training_args.label_names = ["labels"]
-        # optim = torch.optim.Adam([
-        #         {'params': model.hypernetwork.parameters()},
-        # ], lr=training_args.learning_rate)
-        # scheduler = torch.optim.lr_scheduler.LinearLR(optim)
         return Trainer(
             model=model,
             train_dataset=train_dataset,
@@ -419,29 +313,22 @@ class GenericPipeline:
                     early_stopping_threshold=0.01,
                 )
             ],
-            # optimizers = (optim, scheduler)
         )
-
 
     def get_trainingargs(self, num_save_eval_log_steps, saving_models_dir):
-        metric_for_best_model = (
-            "eval_f1" if self.params.approach in ["single"] else "eval_macro_f1"
-        )
-        # metric_for_best_model = "eval_loss"
+        metric_for_best_model = "eval_macro_f1"
         training_args = {
             "output_dir": saving_models_dir,
             "evaluation_strategy": "steps",
-            "eval_steps": num_save_eval_log_steps,  # Evaluation and Save happens every half_epoch_steps
+            "eval_steps": num_save_eval_log_steps,
             "logging_strategy": "steps",
             "logging_steps": num_save_eval_log_steps,
             "load_best_model_at_end": True,
             "metric_for_best_model": metric_for_best_model,
-            "greater_is_better": (
-                False if metric_for_best_model == "eval_loss" else True
-            ),
+            "greater_is_better": True,
             "save_strategy": "steps",
             "save_steps": num_save_eval_log_steps,
-            "save_total_limit": 2,  # Only last 2 models are saved. Older ones are deleted.
+            "save_total_limit": 2,
             "num_train_epochs": self.params.num_epochs,
             "per_device_train_batch_size": self.params.batch_size,
             "per_device_eval_batch_size": self.params.batch_size,
@@ -451,31 +338,26 @@ class GenericPipeline:
             "remove_unused_columns": False,
             "seed": self.params.random_state,
             "label_names": self.task_labels,
-            # ratio_inactive_steps=0.0
         }
-        if self.params.approach == "aart":
-            # lambda1=self.params.lambda1,
-            training_args["lambda2"] = self.params.lambda2
-            training_args["contrastive_alpha"] = self.params.contrastive_alpha
-            training_args["shuffle_train_data"] = (
-                False if self.params.sort_instances_by else True
-            )
-            # training_args["epoch_freeze_bert"] = self.params.epoch_freeze_bert
 
         training_args = MyTrainingArguments(**training_args)
         return training_args
 
+    @abc.abstractmethod
     def get_annotators(self, df):
-        pass
+        """Return a list of unique annotator identifiers from the dataframe."""
 
+    @abc.abstractmethod
     def get_batches(self, df):
-        pass
+        """Convert a dataframe into a tokenized HuggingFace Dataset."""
 
+    @abc.abstractmethod
     def _new_model(self, train_df):
-        pass
+        """Create and return a new model instance."""
 
+    @abc.abstractmethod
     def _create_loss_label_weights(self, data):
-        pass
+        """Compute per-label loss weights."""
 
     def calculate_disagreement(self, df):
         df["continuous_disagreement_labels"] = self.calculate_continous_disagreements(
@@ -510,10 +392,7 @@ class GenericPipeline:
             scores[-1]["avg_disagreement_labels"],
             scores[-1]["avg_disagreement_preds"],
         ) = self.calculate_disagreement(test)
-        epoch_steps = int(train.shape[0] / self.params.batch_size)
-        # scores[-1]['early_stop_epoch'] = float(trainer.state.best_model_checkpoint.split("-")[-1]) / epoch_steps
-        print("~~~~~ Test Masked Preds (individually):")
-        print(scores[-1])
+        logger.info("Test scores (individually): %s", scores[-1])
 
         if self.params.majority_inference:
             maj_scores_dict, test_expanded_results = (
@@ -521,36 +400,29 @@ class GenericPipeline:
                     trainer=trainer, test=test, train=train
                 )
             )
-            print("~~~~~ Test All Annotator Head Preds (Majority Vote):")
-            print(maj_scores_dict)
+            logger.info("Test majority scores: %s", maj_scores_dict)
             scores.append(maj_scores_dict)
             assert not test_expanded_results.empty
             return scores, test_expanded_results
 
         return scores, test
 
-    def tokenize_function(self, x):
+    def tokenize_batch(self, batch: dict) -> dict:
+        """Batched tokenization function for use with Dataset.map(batched=True)."""
         if self.instance_id_col == "pair_id":
-            if (x["parent_text"], x["text"]) in self.tokenizations:
-                return self.tokenizations[(x["parent_text"], x["text"])]
-
-            tokenized_inputs = self.tokenizer(
-                text=x["parent_text"],
-                text_pair=x["text"],
+            return self.tokenizer(
+                text=batch["parent_text"],
+                text_pair=batch["text"],
                 padding="max_length",
                 truncation=True,
                 max_length=self.params.max_len,
             )
-            self.tokenizations[(x["parent_text"], x["text"])] = tokenized_inputs
-        else:
-            if x["text"] in self.tokenizations:
-                return self.tokenizations[x["text"]]
+        return self.tokenizer(
+            text=batch["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=self.params.max_len,
+        )
 
-            tokenized_inputs = self.tokenizer(
-                text=x["text"],
-                padding="max_length",
-                truncation=True,
-                max_length=self.params.max_len,
-            )
-            self.tokenizations[x["text"]] = tokenized_inputs
-        return tokenized_inputs
+    def print_embs_info(self, model):
+        pass

@@ -1,16 +1,13 @@
-import re
+import logging
 from contextlib import contextmanager
+
 import torch
 from torch.nn import functional as F
-import torch.nn as nn
-from transformers import (
-    PreTrainedModel,
-)
-from typing import Any, List, Tuple
 from peft import PeftModel, LoraConfig, get_peft_model
+
 from model_hypernetwork import HyperNetworkV2
-from model_adapted_linear import AdaptedLinear  # Custom adapter module
-from sklearn.preprocessing import LabelEncoder  # For encoding layer numbers
+
+logger = logging.getLogger(__name__)
 
 
 class HyperLoRAModel(PeftModel):
@@ -19,7 +16,6 @@ class HyperLoRAModel(PeftModel):
         model: torch.nn.Module,
         peft_config: LoraConfig,
         num_embeddings: int = 256,
-        loss_weights: dict = None,
         device: torch.device = None,
     ):
         super().__init__(model, peft_config)
@@ -27,15 +23,25 @@ class HyperLoRAModel(PeftModel):
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.loss = torch.nn.CrossEntropyLoss()
-        self.loss_weights = loss_weights
 
-        # collect all the 'query' and 'value' LoRA modules
+        # Discover LoRA modules generically via named_modules
+        target_modules = set(peft_config.target_modules)
         self.lora_modules = []
-        target_modules = peft_config.target_modules
-        for layer in self.model.base_model.roberta.encoder.layer:
-            self.lora_modules.extend(
-                [getattr(layer.attention.self, module) for module in target_modules]
+        for name, module in self.model.base_model.named_modules():
+            if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
+                # Check if this module's name ends with one of the target module names
+                mod_short_name = name.rsplit(".", 1)[-1] if "." in name else name
+                if mod_short_name in target_modules:
+                    self.lora_modules.append(module)
+
+        if not self.lora_modules:
+            raise RuntimeError(
+                f"No LoRA modules found for target_modules={peft_config.target_modules}. "
+                "Ensure the backbone model is compatible (e.g. RoBERTa-style with query/value projections)."
             )
+
+        logger.info("Discovered %d LoRA modules", len(self.lora_modules))
+
         # freeze their original LoRA params
         for module in self.lora_modules:
             for p in module.parameters():
@@ -63,18 +69,16 @@ class HyperLoRAModel(PeftModel):
     @contextmanager
     def _inject_lora_weights(self, A: torch.Tensor, B: torch.Tensor):
         """
-        Temporarily override each LoRA module’s forward to use
+        Temporarily override each LoRA module's forward to use
         F.linear with our generated A/B, instead of its .weight.
         """
         handles = []
         for j, module in enumerate(self.lora_modules):
-            # the two Linear submodules created by PEFT
             lora_A = module.lora_A["default"]
             lora_B = module.lora_B["default"]
-            wA = A[j].to(self.device)
-            wB = B[j].to(self.device)
+            wA = A[j]
+            wB = B[j]
 
-            # forward-hook replaces the module’s output with F.linear(input, wX, bias)
             handles.append(
                 lora_A.register_forward_hook(
                     lambda mod, inp, out, w=wA: F.linear(inp[0], w, mod.bias)
@@ -101,48 +105,41 @@ class HyperLoRAModel(PeftModel):
         lora_r: int = 2,
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
-        loss_weights: dict = None,
         device: torch.device = None,
     ) -> "HyperLoRAModel":
         """
-        Factory function to create a HyperPeftModel instance from a pretrained model.
+        Factory to create a HyperLoRAModel from a pretrained backbone.
 
         Args:
-            pretrained_model_name_or_path (str): Path or identifier for the pretrained model.
-            num_labels (int): Number of labels for classification tasks.
-            num_embeddings (int): Number of embeddings for the global hypernetwork.
-            lora_r (int): Low-rank factor for LoRA.
-            lora_alpha (int): Scaling factor for LoRA.
-            lora_dropout (float): Dropout rate for LoRA layers.
-            device (torch.device): Device to run the model on.
+            pretrained_model_name_or_path: Path or identifier for the pretrained model.
+            num_labels: Number of labels for classification tasks.
+            num_embeddings: Number of annotator embeddings for the hypernetwork.
+            lora_r: Low-rank factor for LoRA.
+            lora_alpha: Scaling factor for LoRA.
+            lora_dropout: Dropout rate for LoRA layers.
+            device: Device to run the model on.
         """
         from transformers import AutoModelForSequenceClassification
 
-        # Load the pretrained model.
         model = AutoModelForSequenceClassification.from_pretrained(
             pretrained_model_name_or_path, num_labels=num_labels
         )
 
-        # Define LoRA configuration.
         peft_config = LoraConfig(
             r=lora_r,
             task_type="SEQ_CLS",
             lora_alpha=lora_alpha,
-            # target_modules=["fc1"],  # first MLP weight fc1 (W1)
             target_modules=["query", "value"],
             fan_in_fan_out=False,
             lora_dropout=lora_dropout,
         )
 
-        # Wrap the model with LoRA using PEFT.
         lora_model = get_peft_model(model, peft_config)
 
-        # Instantiate the HyperPeftModel.
         hyper_peft_model = cls(
             lora_model,
             peft_config,
             num_embeddings=num_embeddings,
-            loss_weights=loss_weights,
             device=device,
         )
         return hyper_peft_model
@@ -151,41 +148,48 @@ class HyperLoRAModel(PeftModel):
         # pop off the hypernetwork IDs
         HN_ids = kwargs.pop("annotator_ids").to(self.device)
         batch = HN_ids.size(0)
+        labels = kwargs.pop("labels", None)
 
-        # generate all A and B for the whole batch
-        A_batch, B_batch = self.hypernet(
-            HN_ids
-        )  # shapes: (B, M, r, in_dim) and (B, M, out_dim, r)
+        input_ids = kwargs["input_ids"].to(self.device)
+        attention_mask = kwargs["attention_mask"].to(self.device)
 
-        logits_list = []
-        loss_list = []
-        for i in range(batch):
-            # for each sample, inject its slice of adapter weights
-            Ai = A_batch[i]  # (M, r, in_dim)
-            Bi = B_batch[i]  # (M, out_dim, r)
+        # Group batch items by annotator ID to avoid redundant LoRA weight generation
+        unique_ids, inverse_indices = torch.unique(HN_ids, return_inverse=True)
+
+        # Generate LoRA weights for unique annotator IDs only
+        A_unique, B_unique = self.hypernet(unique_ids)
+
+        logits_list = [None] * batch
+
+        for uid_idx in range(unique_ids.size(0)):
+            # Find all batch indices sharing this annotator ID
+            mask = inverse_indices == uid_idx
+            batch_indices = mask.nonzero(as_tuple=True)[0]
+
+            Ai = A_unique[uid_idx]  # (M, r, in_dim)
+            Bi = B_unique[uid_idx]  # (M, out_dim, r)
 
             with self._inject_lora_weights(Ai, Bi):
-                # run the model on just this sample
-                single_kwargs = {
-                    "input_ids": kwargs["input_ids"][i].unsqueeze(0).to(self.device),
-                    "attention_mask": kwargs["attention_mask"][i]
-                    .unsqueeze(0)
-                    .to(self.device),
-                    "labels": kwargs["labels"][i].unsqueeze(0).to(self.device),
+                sub_kwargs = {
+                    "input_ids": input_ids[batch_indices],
+                    "attention_mask": attention_mask[batch_indices],
                 }
-                out = self.base_model(
-                    *args, **single_kwargs
-                ).logits  # shape (1, num_labels)
-                logits_list.append(out)
-                # HN_id = HN_ids[i].unsqueeze(0).item()
-                # loss = torch.nn.CrossEntropyLoss(weight=self.loss_weights[HN_id])
-                # loss_value = loss(out, single_kwargs["labels"])
-                # loss_list.append(loss_value)
+                if labels is not None:
+                    sub_kwargs["labels"] = labels[batch_indices].to(self.device)
+
+                out = self.base_model(*args, **sub_kwargs).logits
+                for i, idx in enumerate(batch_indices):
+                    logits_list[idx.item()] = out[i : i + 1]
 
         # stack back to (B, num_labels)
         logits = torch.cat(logits_list, dim=0)
-        # loss = torch.stack(loss_list, dim=0).mean().to(self.device)
-        loss = self.loss(logits, kwargs["labels"].to(self.device))
-        # if you want to "catenate" HN_ids into the logits (as before):
+
+        # Prepend annotator IDs to logits for metric computation
         catted = torch.cat([HN_ids.unsqueeze(-1), logits], dim=-1)
-        return {"loss": loss, "logits": catted}
+
+        result = {"logits": catted}
+        if labels is not None:
+            loss = self.loss(logits, labels.to(self.device))
+            result["loss"] = loss
+
+        return result

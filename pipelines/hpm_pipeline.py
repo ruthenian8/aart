@@ -1,25 +1,29 @@
-import torch
+import logging
+import os
+
 import numpy as np
 import pandas as pd
+import torch
 from transformers import Trainer
+
 from pipelines.generic_pipeline import GenericPipeline
-# from model_architectures import HyperPeftModel, CustomHyperAdapterModel
 from model_architectures import HyperLoRAModel
-from sklearn.utils.class_weight import compute_class_weight
-from utils import get_a_p_r_f
+from utils import get_a_p_r_f, extract_model_logits
+
+logger = logging.getLogger(__name__)
 
 
 class HPMPipeline(GenericPipeline):
     def calculate_continous_disagreements(self, df, label_or_pred_col="label"):
         majority = df.groupby(self.instance_id_col)[label_or_pred_col].mean() >= 0.5
         count = df.groupby(self.instance_id_col)[label_or_pred_col].count()
-        sum = df.groupby(self.instance_id_col)[label_or_pred_col].sum()
+        sum_ = df.groupby(self.instance_id_col)[label_or_pred_col].sum()
 
         disagreements = [
             (
-                1.0 - float(sum[t_i]) / float(count[t_i])
+                1.0 - float(sum_[t_i]) / float(count[t_i])
                 if majority[t_i]
-                else float(sum[t_i]) / float(count[t_i])
+                else float(sum_[t_i]) / float(count[t_i])
             )
             for t_i in df[self.instance_id_col]
         ]
@@ -38,21 +42,6 @@ class HPMPipeline(GenericPipeline):
         assert "majority_label" not in df.columns
         return aggregated_labels
 
-    def _create_loss_annotator_weights(self, annotators):
-        annot_codes = np.unique(annotators)
-        for i in range(len(annot_codes)):
-            assert annot_codes[i] == i
-        weights = compute_class_weight(
-            class_weight="balanced", classes=annot_codes, y=annotators
-        )
-        # print("Weights used for annotators: ", weights)
-        if len(weights) == 1:
-            weights = [0.01, 1]
-        weights = torch.tensor(
-            weights, dtype=torch.bfloat16, device="cuda"
-        )  # .to(self.device)
-        return weights
-
     def add_fake_annotators(self, df):
         N = self.params.num_fake_annotators
         if N <= 0:
@@ -60,21 +49,20 @@ class HPMPipeline(GenericPipeline):
         df_annotators = self.get_annotators(df)
 
         for i in range(N):
-            for type in ["maj", "opp"]:
-                fake_ann_name = f"annotator_fake_{type}_{i}"
+            for type_ in ["maj", "opp"]:
+                fake_ann_name = f"annotator_fake_{type_}_{i}"
                 assert fake_ann_name not in df_annotators
-                print(f"*** Adding {fake_ann_name}")
+                logger.info("Adding %s", fake_ann_name)
                 tmp_df = df.drop_duplicates(self.instance_id_col).copy()
                 tmp_df = tmp_df.sample(
                     frac=1 / N, random_state=self.params.random_state
                 )
                 tmp_df["annotator"] = fake_ann_name
-                # todo this should change for multi class
                 tmp_df["label"] = np.abs(
                     tmp_df["majority_label"]
                     - np.random.choice([0, 1], size=tmp_df.shape[0], p=[0.9, 0.1])
                 )
-                if type == "opp":
+                if type_ == "opp":
                     tmp_df["label"] = 1 - tmp_df["label"]
 
                 df = pd.concat([df, tmp_df], axis=0, ignore_index=True)
@@ -82,21 +70,21 @@ class HPMPipeline(GenericPipeline):
         return df.copy()
 
     def add_predictions(self, df, preds):
-        df["pred"] = preds.predictions[:, 1:].argmax(axis=1)
+        logits = extract_model_logits(preds)
+        # Strip the prepended annotator ID column
+        class_logits = logits[:, 1:]
+        df["pred"] = class_logits.argmax(axis=1)
         return df.copy()
 
     def encode_values(self, train_df, dev_df, test_df):
-        encoding_colnames = self.params.embedding_colnames
+        encoding_colnames = list(self.params.embedding_colnames)
         if "annotator" not in encoding_colnames:
             encoding_colnames = encoding_colnames + ["annotator"]
-        print("encoding colnames: ")
-        print(encoding_colnames)
+        logger.info("Encoding columns: %s", encoding_colnames)
 
         from sklearn.preprocessing import LabelEncoder
 
         label_encoders_dict = {}
-        ### integer mapping using LabelEncoder
-        print("Encoding the following columns: ", encoding_colnames)
         for emb_col in encoding_colnames:
             assert f"{emb_col}_int_encoded" not in train_df.columns
             label_encoders_dict[emb_col] = LabelEncoder()
@@ -111,29 +99,40 @@ class HPMPipeline(GenericPipeline):
                 )
             }
 
-        # TODO remove the following from the main branch and only keep in emfd branch
         for emb_col in encoding_colnames:
-            ignore_error = False
-            if (emb_col == "annotator") and ("emfd" in self.params.data_name.lower()):
-                ignore_error = True
             train_df[f"{emb_col}_int_encoded"] = label_encoders_dict[emb_col].transform(
                 train_df[emb_col].squeeze()
             )
-            if ignore_error:
-                print(dev_df.shape)
+
+            # Handle unknown annotators in dev/test based on policy
+            unknown_policy = self.params.unknown_annotator_policy
+            train_known_values = set(train_df[emb_col].unique())
+            for split_name, split_df in [("dev", dev_df), ("test", test_df)]:
+                unknown_mask = ~split_df[emb_col].isin(train_known_values)
+                if unknown_mask.any():
+                    n_unknown = unknown_mask.sum()
+                    if unknown_policy == "error":
+                        raise ValueError(
+                            f"Found {n_unknown} rows in {split_name} with unknown {emb_col} values. "
+                            f"Set unknown_annotator_policy='drop' to silently drop these rows."
+                        )
+                    elif unknown_policy == "drop":
+                        logger.warning(
+                            "Dropping %d rows from %s with unknown %s values",
+                            n_unknown, split_name, emb_col,
+                        )
+
+            if unknown_policy == "drop":
                 dev_df = (
-                    dev_df[dev_df[emb_col].isin(train_df[emb_col])]
+                    dev_df[dev_df[emb_col].isin(train_known_values)]
                     .reset_index(drop=True)
                     .copy()
                 )
-                print(dev_df.shape)
-                print(test_df.shape)
                 test_df = (
-                    test_df[test_df[emb_col].isin(train_df[emb_col])]
+                    test_df[test_df[emb_col].isin(train_known_values)]
                     .reset_index(drop=True)
                     .copy()
                 )
-                print(test_df.shape)
 
             dev_df[f"{emb_col}_int_encoded"] = label_encoders_dict[emb_col].transform(
                 dev_df[emb_col].squeeze()
@@ -145,51 +144,25 @@ class HPMPipeline(GenericPipeline):
         return train_df, dev_df, test_df
 
     def _create_loss_label_weights(self, labels: pd.Series) -> dict:
-        weights = labels.apply(
-            lambda x: torch.tensor(
-                compute_class_weight(
-                    classes=np.array(sorted(list(set(x)))),
-                    y=x,
-                    class_weight='balanced'
-                ),
-                dtype=torch.float,
-                device="cuda"
-            )
-        )
-        weights = weights.to_dict()
-
-        return weights
+        # Not used in the current HPM path; kept as abstract method implementation.
+        return {}
 
     def _new_model(self, train_df):
         self.task_labels = None
         embd_type_cnt = {}
         for emb_col in ["annotator"]:
             embd_type_cnt[emb_col] = train_df[emb_col].nunique()
-        print(embd_type_cnt)
+        logger.info("Embedding counts: %s", embd_type_cnt)
 
         train_labels_list = train_df.label.unique().astype(int).tolist()
         num_labels = len(set(train_labels_list))
-        train_labels_dict = train_df.groupby("annotator_int_encoded").label.apply(list)
-        
-        loss_weights = self._create_loss_label_weights(train_labels_dict)
-        print("Loss weights: ", loss_weights)
 
         classifier = HyperLoRAModel.from_pretrained(
             pretrained_model_name_or_path=self.params.language_model_name,
             num_labels=num_labels,
             num_embeddings=embd_type_cnt["annotator"],
-            loss_weights=loss_weights,
-            device=torch.device("cuda"),
+            device=self.device,
         )
-        # classifier = CustomHyperAdapterModel.from_pretrained(
-        #     pretrained_model_name_or_path=self.params.language_model_name,
-        #     num_labels=num_labels,
-        #     num_embeddings=embd_type_cnt["annotator"],
-        #     embedding_dim=768,
-        #     layer_embedding_dim=256,
-        #     r=2,
-        #     out_dim = 3072
-        # )
         return classifier
 
     def get_batches(self, df):
@@ -198,17 +171,26 @@ class HPMPipeline(GenericPipeline):
         ds_dict = {}
         ds_dict["labels"] = df["label"].values
         ds_dict["text_ids"] = df[self.instance_id_col].values
-        ds_dict["text"] = df.prep_text.astype(str)
-        ds_dict[f"annotator_ids"] = df[f"annotator_int_encoded"]
+        ds_dict["text"] = df.prep_text.astype(str).tolist()
+        ds_dict["annotator_ids"] = df["annotator_int_encoded"].values
 
-        if "pair_id" in df:
-            ds_dict["parent_text"] = df.prep_parent_text.astype(str)
+        if "pair_id" in df.columns:
+            ds_dict["parent_text"] = df.prep_parent_text.astype(str).tolist()
+
         ds = Dataset.from_dict(ds_dict)
-        tokenized_ds = ds.map(lambda x: self.tokenize_function(x), num_proc=16)
+        num_proc = self.params.num_tokenization_workers
+        if num_proc is None:
+            num_proc = min(os.cpu_count() or 1, 4)
+        tokenized_ds = ds.map(
+            self.tokenize_batch,
+            batched=True,
+            batch_size=1000,
+            num_proc=num_proc,
+        )
         tokenized_ds = tokenized_ds.remove_columns("text")
-        if "pair_id" in df:
+        if "parent_text" in tokenized_ds.column_names:
             tokenized_ds = tokenized_ds.remove_columns("parent_text")
-        print(tokenized_ds)
+        logger.info("Tokenized dataset: %s", tokenized_ds)
         return tokenized_ds
 
     def get_annotators(self, df):
@@ -216,8 +198,13 @@ class HPMPipeline(GenericPipeline):
         return annotators_list
 
     def expand_test(self, df, unique_annotator_int):
-        all_texts_df = df[[self.instance_id_col, "prep_text"]].drop_duplicates().copy()
-        assert len(unique_annotator_int) == len((set(unique_annotator_int)))
+        """Expand test set so every text is paired with every annotator."""
+        cols_to_keep = [self.instance_id_col, "prep_text"]
+        if self.instance_id_col == "pair_id" and "prep_parent_text" in df.columns:
+            cols_to_keep.append("prep_parent_text")
+
+        all_texts_df = df[cols_to_keep].drop_duplicates().copy()
+        assert len(unique_annotator_int) == len(set(unique_annotator_int))
         all_annotators_df = pd.DataFrame(
             {"annotator_int_encoded": unique_annotator_int}
         )
@@ -226,12 +213,12 @@ class HPMPipeline(GenericPipeline):
         ).drop("key", axis=1)
         all_texts_all_annots["label"] = np.nan
 
-        print("df shape before appending the missing annotators: ", df.shape)
+        logger.info("df shape before expanding: %s", df.shape)
         result_df = pd.concat([df, all_texts_all_annots], axis=0, ignore_index=True)
         result_df = result_df.drop_duplicates(
             [self.instance_id_col, "annotator_int_encoded"], keep="first"
         )
-        print("df shape after appending the missing annotators: ", result_df.shape)
+        logger.info("df shape after expanding: %s", result_df.shape)
         assert result_df.shape[0] == df[self.instance_id_col].nunique() * len(
             unique_annotator_int
         )
@@ -247,13 +234,20 @@ class HPMPipeline(GenericPipeline):
             test, unique_annotator_int=unique_annotator_codes
         )
         end = time.time()
-        print(f"Time spent on expanding test {end - start}")
+        logger.info("Time expanding test: %.2fs", end - start)
+
+        # Fill NaN labels with a dummy value for tokenization (will not be used for loss)
+        test_expanded["label"] = test_expanded["label"].fillna(0).astype(int)
+
         test_dataset_expanded = self.get_batches(test_expanded)
+        # Remove labels so model runs in inference-only mode
         test_dataset_expanded = test_dataset_expanded.remove_columns("labels")
+
         preds_expanded = trainer.predict(test_dataset_expanded)
-        test_expanded["pred"] = (
-            preds_expanded.predictions[0][:, 1:].argmax(axis=1).tolist()
-        )
+        logits = extract_model_logits(preds_expanded)
+        # Strip the prepended annotator ID column
+        class_logits = logits[:, 1:]
+        test_expanded["pred"] = class_logits.argmax(axis=1).tolist()
         assert test_expanded["pred"].isna().sum() == 0
 
         test_expanded_results = test_expanded.groupby(self.instance_id_col)[
@@ -289,9 +283,7 @@ class HPMPipeline(GenericPipeline):
                 or len(a_results) < 5
             ):
                 continue
-            print("~" * 30)
-            print("~" * 30)
-            print(f" * * * Performance of {a_results['annotator'].iloc[0]}")
+            logger.debug("Performance of %s", a_results["annotator"].iloc[0])
             scores_dict = {}
             (
                 scores_dict["accuracy"],
@@ -326,7 +318,6 @@ class HPMPipeline(GenericPipeline):
             scores_dict["sim_to_maj"] = round(
                 (a_results["label"] == a_results["majority_label"]).mean(), 3
             )
-            print(scores_dict)
             annotator_scores.append(scores_dict)
 
         all_labels = pd.concat(all_labels, axis=0, ignore_index=True)
@@ -338,6 +329,6 @@ class HPMPipeline(GenericPipeline):
             scores_dict_test["micro_recall"],
             scores_dict_test["micro_f1"],
         ) = get_a_p_r_f(labels=all_labels, preds=all_predictions)
-        scores_dict_test["macro_f1"] = round(np.mean(all_f1s), 2)
+        scores_dict_test["macro_f1"] = round(np.mean(all_f1s), 2) if all_f1s else 0.0
         annotator_scores.append(scores_dict_test)
         return annotator_scores
