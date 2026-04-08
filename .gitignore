@@ -9,3 +9,7 @@ saved_models/
 pipelines/__pycache__
 runs/
 analysis_notebooks/
+.pytest_cache/
+tests/__pycache__/
+experimental/__pycache__/
+splits/

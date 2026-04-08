@@ -9,6 +9,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 
+def _hf_hub_available():
+    """Check if HuggingFace Hub is reachable."""
+    try:
+        from transformers import AutoTokenizer
+        AutoTokenizer.from_pretrained("roberta-base")
+        return True
+    except Exception:
+        return False
+
+
+requires_hf_hub = pytest.mark.skipif(
+    not _hf_hub_available(),
+    reason="HuggingFace Hub is not reachable in this environment"
+)
+
+
+@requires_hf_hub
 class TestBatchedTokenization:
     """Test that batched tokenization produces correct output."""
 
@@ -48,6 +65,7 @@ class TestBatchedTokenization:
         assert len(result["input_ids"][0]) == 64
 
 
+@requires_hf_hub
 class TestModelForward:
     """Test HyperLoRAModel forward pass."""
 
