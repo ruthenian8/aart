@@ -340,6 +340,12 @@ class GenericPipeline(abc.ABC):
             "label_names": self.task_labels,
         }
 
+        # Keep Trainer on the same device the pipeline resolved.
+        # Without this, Trainer auto-selects CUDA even if the pipeline was configured
+        # with device=cpu, causing device-mismatch errors in HyperLoRAModel.forward().
+        if self.device.type == "cpu":
+            training_args["use_cpu"] = True
+
         training_args = MyTrainingArguments(**training_args)
         return training_args
 

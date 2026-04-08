@@ -239,7 +239,13 @@ class HPMPipeline(GenericPipeline):
         end = time.time()
         logger.info("Time expanding test: %.2fs", end - start)
 
-        # Fill NaN labels with a dummy value for tokenization (will not be used for loss)
+        # Track which rows have real labels vs synthetic (expanded) rows.
+        # Synthetic rows have NaN labels and must NOT contribute to majority ground-truth.
+        test_expanded["_has_real_label"] = test_expanded["label"].notna()
+
+        # Fill NaN labels with a dummy value only for tokenization; they will not be
+        # used for loss (labels column is removed before prediction) and are excluded
+        # from the majority label computation below.
         test_expanded["label"] = test_expanded["label"].fillna(0).astype(int)
 
         test_dataset_expanded = self.get_batches(test_expanded)
@@ -253,10 +259,19 @@ class HPMPipeline(GenericPipeline):
         test_expanded["pred"] = class_logits.argmax(axis=1).tolist()
         assert test_expanded["pred"].isna().sum() == 0
 
+        # Compute majority label using only the rows that had real ground-truth labels.
+        # Using all rows (including synthetic ones filled with 0) would bias maj_label
+        # toward 0 when annotators only labelled a subset of texts.
+        real_labels_df = test_expanded[test_expanded["_has_real_label"]]
+        maj_label_series = (
+            real_labels_df.groupby(self.instance_id_col)["label"].mean() >= 0.5
+        )
+
+        # Majority prediction uses all annotators (that is the point of the expansion).
         test_expanded_results = test_expanded.groupby(self.instance_id_col)[
-            ["label", "pred"]
+            ["pred"]
         ].mean()
-        test_expanded_results["maj_label"] = test_expanded_results["label"] >= 0.5
+        test_expanded_results["maj_label"] = maj_label_series
         test_expanded_results["maj_pred"] = test_expanded_results["pred"] >= 0.5
         scores_dict_test = {
             "type": "majority_all",

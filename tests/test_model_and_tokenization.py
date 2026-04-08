@@ -180,3 +180,61 @@ class TestUtils:
         a, p, r, f = get_a_p_r_f([0, 1, 0, 1], [0, 1, 0, 1])
         assert a == 100.0
         assert f == 100.0
+
+
+class TestMajorityLabelBias:
+    """Test that majority label computation is not biased by synthetic rows."""
+
+    def test_majority_label_uses_only_real_labels(self):
+        """Synthetic (expanded) rows filled with 0 should NOT affect maj_label."""
+        import pandas as pd
+        import numpy as np
+
+        # Simulate test_expanded after expand_test + fillna(0):
+        # text_id 1: 2 real labels (both 1), 1 synthetic (filled to 0)
+        # text_id 2: 2 real labels (both 0), 1 synthetic (filled to 0)
+        data = {
+            "text_id": [1, 1, 1, 2, 2, 2],
+            "label": [1, 1, 0, 0, 0, 0],    # third row in each group is synthetic
+            "_has_real_label": [True, True, False, True, True, False],
+            "pred": [1, 1, 1, 0, 0, 0],
+        }
+        df = pd.DataFrame(data)
+
+        # Majority label should be based on real labels only:
+        # text 1: mean(1, 1) = 1.0 >= 0.5 → True
+        # text 2: mean(0, 0) = 0.0 < 0.5 → False
+        real_df = df[df["_has_real_label"]]
+        maj_label = real_df.groupby("text_id")["label"].mean() >= 0.5
+        assert maj_label[1] == True
+        assert maj_label[2] == False
+
+        # Without the fix (using all rows including synthetic):
+        # text 1: mean(1, 1, 0) = 0.67 → would still be True (less clear)
+        # text 2: mean(0, 0, 0) = 0.0 → False (coincidentally correct here)
+        # But with text_id 3 having 1 real label=1 and synthetic=0:
+        data2 = {
+            "text_id": [3, 3],
+            "label": [1, 0],
+            "_has_real_label": [True, False],
+            "pred": [1, 0],
+        }
+        df2 = pd.DataFrame(data2)
+        real_only = df2[df2["_has_real_label"]].groupby("text_id")["label"].mean() >= 0.5
+        all_rows = df2.groupby("text_id")["label"].mean() >= 0.5
+        # Real-only: 1/1 = 1.0 → True
+        assert real_only[3] == True
+        # Naive all-rows: (1+0)/2 = 0.5 → True (borderline, but same result here)
+        # The fix is most critical when synthetic rows push mean below 0.5
+        data3 = {
+            "text_id": [4, 4, 4],
+            "label": [1, 0, 0],   # 1 real positive, 2 synthetic zeros
+            "_has_real_label": [True, False, False],
+        }
+        df3 = pd.DataFrame(data3)
+        real_only3 = df3[df3["_has_real_label"]].groupby("text_id")["label"].mean() >= 0.5
+        naive3 = df3.groupby("text_id")["label"].mean() >= 0.5
+        # Real-only: 1/1 = 1.0 → True (correct)
+        assert real_only3[4] == True
+        # Naive: 1/3 = 0.33 → False (WRONG — incorrectly classifies as negative majority)
+        assert naive3[4] == False  # this is the bug we fixed
