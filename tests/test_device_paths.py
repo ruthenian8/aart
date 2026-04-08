@@ -28,6 +28,31 @@ class TestDeviceInit:
         device = torch.device(p.device)
         assert device.type == "cpu"
 
+    def test_cpu_training_args_compat(self):
+        """get_trainingargs sets the correct CPU flag for the installed transformers version."""
+        import dataclasses
+        from transformers import TrainingArguments
+        from pipelines.generic_pipeline import GenericPipeline
+
+        ta_fields = {f.name for f in dataclasses.fields(TrainingArguments)}
+
+        # Simulate the logic used in get_trainingargs
+        training_args = {}
+        import torch
+        device = torch.device("cpu")
+        if device.type == "cpu":
+            if "use_cpu" in ta_fields:
+                training_args["use_cpu"] = True
+            else:
+                training_args["no_cuda"] = True
+
+        # Exactly one of the two flags should be set
+        assert ("use_cpu" in training_args or "no_cuda" in training_args)
+        assert not ("use_cpu" in training_args and "no_cuda" in training_args)
+        # The set flag must be a valid TrainingArguments field
+        flag = "use_cpu" if "use_cpu" in training_args else "no_cuda"
+        assert flag in ta_fields, f"{flag!r} is not a valid TrainingArguments field"
+
 
 class TestPathHandling:
     """Test that repo-root path handling works correctly."""

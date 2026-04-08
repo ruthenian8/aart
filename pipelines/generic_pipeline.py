@@ -349,8 +349,14 @@ class GenericPipeline(abc.ABC):
         # Keep Trainer on the same device the pipeline resolved.
         # Without this, Trainer auto-selects CUDA even if the pipeline was configured
         # with device=cpu, causing device-mismatch errors in HyperLoRAModel.forward().
+        # `use_cpu` was introduced in transformers ~4.32; older versions use `no_cuda`.
         if self.device.type == "cpu":
-            training_args["use_cpu"] = True
+            import dataclasses as _dc
+            _ta_fields = {f.name for f in _dc.fields(TrainingArguments)}
+            if "use_cpu" in _ta_fields:
+                training_args["use_cpu"] = True
+            else:
+                training_args["no_cuda"] = True
 
         training_args = MyTrainingArguments(**training_args)
         return training_args
