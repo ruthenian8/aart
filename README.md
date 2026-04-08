@@ -22,9 +22,7 @@ pip install -r requirements.txt
 
 ## Supported Models
 
-**Current backbone support:** RoBERTa-style models with `query`/`value` attention modules (e.g. `roberta-base`, `cardiffnlp/twitter-roberta-base-offensive`).
-
-Other transformer families may work if they expose compatible attention projection modules, but have not been tested.
+**Current backbone support:** RoBERTa-style models with `query`/`value` attention modules (e.g. `roberta-base`).
 
 ---
 
