@@ -10,7 +10,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 def _hf_hub_available():
-    """Check if HuggingFace Hub is reachable."""
+    """Check if HuggingFace Hub is reachable (tokenizer only — small files)."""
     try:
         from transformers import AutoTokenizer
         AutoTokenizer.from_pretrained("roberta-base")
@@ -19,9 +19,30 @@ def _hf_hub_available():
         return False
 
 
+def _roberta_model_cached():
+    """Return True only if roberta-base model weights are already in the local cache.
+
+    This prevents tests from blocking on a large (~499 MB) download in
+    environments where HuggingFace Hub is slow or rate-limited.
+    """
+    try:
+        from huggingface_hub import try_to_load_from_cache, _CACHED_NO_EXIST
+        result = try_to_load_from_cache("roberta-base", "model.safetensors")
+        if result is None or result is _CACHED_NO_EXIST:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 requires_hf_hub = pytest.mark.skipif(
     not _hf_hub_available(),
     reason="HuggingFace Hub is not reachable in this environment"
+)
+
+requires_model_weights = pytest.mark.skipif(
+    not _roberta_model_cached(),
+    reason="roberta-base model weights not in local cache; skipping to avoid large download"
 )
 
 
@@ -65,7 +86,7 @@ class TestBatchedTokenization:
         assert len(result["input_ids"][0]) == 64
 
 
-@requires_hf_hub
+@requires_model_weights
 class TestModelForward:
     """Test HyperLoRAModel forward pass."""
 
