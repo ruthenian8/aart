@@ -155,6 +155,7 @@ def main():
     pacific = pytz.timezone("US/Pacific")
     sa_time = datetime.now(pacific)
     name_time = sa_time.strftime("%m%d%y-%H%M")
+    score["time"] = name_time
 
     results_dir = REPO_ROOT / "results" / params.approach / params.data_name
     results_dir.mkdir(parents=True, exist_ok=True)

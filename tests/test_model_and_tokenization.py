@@ -137,6 +137,12 @@ class TestModelForward:
         assert "logits" in result
         assert result["logits"].shape == (2, 3)
 
+    def test_forward_accepts_tuple_backbone_output(self, model, dummy_inputs):
+        with torch.no_grad():
+            result = model(**dummy_inputs, return_dict=False)
+
+        assert result["logits"].shape == (2, 3)
+
     def test_forward_grouped_by_annotator(self, model):
         """When batch items share an annotator ID, they should be grouped."""
         from transformers import AutoTokenizer
@@ -159,6 +165,215 @@ class TestModelForward:
             result = model(**inputs)
         assert result["logits"].shape == (3, 3)
         assert "loss" in result
+
+
+class TestCausalLMForward:
+    """Test causal-LM support without downloading pretrained weights."""
+
+    @pytest.fixture
+    def model(self, tmp_path):
+        from transformers import GPT2Config, GPT2LMHeadModel
+        from model_architectures import HyperLoRAModel
+
+        model_path = tmp_path / "tiny-gpt2"
+        config = GPT2Config(
+            vocab_size=32,
+            n_positions=16,
+            n_embd=12,
+            n_layer=2,
+            n_head=2,
+            bos_token_id=1,
+            eos_token_id=2,
+            pad_token_id=0,
+        )
+        GPT2LMHeadModel(config).save_pretrained(model_path)
+        model = HyperLoRAModel.from_pretrained(
+            model_path,
+            num_embeddings=4,
+            lora_r=2,
+            task_type="CAUSAL_LM",
+            target_modules=["c_attn"],
+            fan_in_fan_out=True,
+            device=torch.device("cpu"),
+        )
+        model.eval()
+        return model
+
+    def test_forward_uses_token_logits_and_causal_loss(self, model):
+        input_ids = torch.tensor([[1, 4, 5, 2], [1, 6, 7, 2]])
+        with torch.no_grad():
+            result = model(
+                input_ids=input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                annotator_ids=torch.tensor([0, 1]),
+                labels=input_ids,
+            )
+
+        assert result["logits"].shape == (2, 4, 32)
+        assert result["loss"].ndim == 0
+
+        with torch.no_grad():
+            positional_result = model(
+                input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                annotator_ids=torch.tensor([0, 1]),
+            )
+        assert positional_result["logits"].shape == (2, 4, 32)
+
+    def test_forward_uses_backbone_positional_signature(self, model):
+        input_ids = torch.tensor([[1, 4, 5, 2], [1, 6, 7, 2]])
+        attention_mask = torch.tensor([[1, 1, 1, 0], [1, 1, 0, 0]])
+        annotator_ids = torch.tensor([0, 1])
+
+        assert model._causal_lm_positional_names()[:3] == (
+            "input_ids",
+            "past_key_values",
+            "attention_mask",
+        )
+
+        with torch.no_grad():
+            keyword_result = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                annotator_ids=annotator_ids,
+            )
+            positional_result = model(
+                input_ids,
+                None,
+                attention_mask,
+                annotator_ids=annotator_ids,
+            )
+
+        torch.testing.assert_close(
+            positional_result.logits,
+            keyword_result.logits,
+        )
+
+    def test_forward_preserves_causal_output_options(self, model):
+        input_ids = torch.tensor([[1, 4, 5, 2], [1, 6, 7, 2]])
+        with torch.no_grad():
+            result = model(
+                input_ids=input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                annotator_ids=torch.tensor([0, 1]),
+                output_hidden_states=True,
+                output_attentions=True,
+                return_dict=False,
+            )
+
+        assert isinstance(result, tuple)
+        assert result[0].shape == (2, 4, 32)
+        assert result[-2] is not None  # hidden states
+        assert result[-1] is not None  # attentions
+
+    def test_forward_tuple_places_loss_before_logits(self, model):
+        input_ids = torch.tensor([[1, 4, 5, 2], [1, 6, 7, 2]])
+        with torch.no_grad():
+            result = model(
+                input_ids=input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                annotator_ids=torch.tensor([0, 1]),
+                labels=input_ids,
+                return_dict=False,
+            )
+
+        assert isinstance(result, tuple)
+        assert result[0].ndim == 0
+        assert result[1].shape == (2, 4, 32)
+
+    def test_generate_preserves_batch_order(self, model):
+        input_ids = torch.tensor([[1, 4], [1, 5], [1, 6]])
+        with torch.no_grad():
+            sequences = model.generate(
+                input_ids=input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                annotator_ids=torch.tensor([1, 0, 1]),
+                max_new_tokens=2,
+                do_sample=False,
+            )
+
+        assert sequences.shape == (3, 4)
+        assert torch.equal(sequences[:, :2], input_ids)
+
+    def test_generate_supports_multiple_return_sequences(self, model):
+        input_ids = torch.tensor([[1, 4], [1, 5], [1, 6]])
+        with torch.no_grad():
+            sequences = model.generate(
+                input_ids,
+                annotator_ids=torch.tensor([1, 0, 1]),
+                num_beams=2,
+                num_return_sequences=2,
+                max_new_tokens=2,
+                do_sample=False,
+            )
+
+        assert sequences.shape == (6, 4)
+        assert torch.equal(sequences[::2, :2], input_ids)
+        assert torch.equal(sequences[1::2, :2], input_ids)
+
+    def test_generate_supports_structured_results(self, model):
+        input_ids = torch.tensor([[1, 4], [1, 5], [1, 6]])
+        with torch.no_grad():
+            result = model.generate(
+                input_ids=input_ids,
+                annotator_ids=torch.tensor([1, 0, 1]),
+                max_new_tokens=2,
+                do_sample=False,
+                return_dict_in_generate=True,
+                output_scores=True,
+            )
+
+        assert result.sequences.shape == (3, 4)
+        assert len(result.scores) == 2
+
+    def test_gqa_backbone_uses_shape_specific_heads(self, tmp_path):
+        from transformers import LlamaConfig, LlamaForCausalLM
+        from model_architectures import HyperLoRAModel
+
+        model_path = tmp_path / "tiny-llama"
+        config = LlamaConfig(
+            vocab_size=32,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            max_position_embeddings=16,
+            bos_token_id=1,
+            eos_token_id=2,
+            pad_token_id=0,
+        )
+        LlamaForCausalLM(config).save_pretrained(model_path)
+        model = HyperLoRAModel.from_pretrained(
+            model_path,
+            num_embeddings=4,
+            task_type="CAUSAL_LM",
+            device=torch.device("cpu"),
+        )
+
+        assert len(model.lora_module_groups) == 2
+
+
+class TestHyperNetworkCollection:
+    """Test shape-specific hypernetwork heads."""
+
+    def test_supports_different_projection_shapes(self):
+        from model_hypernetwork import HyperNetworkCollection
+
+        model = HyperNetworkCollection(
+            speaker_dim=8,
+            context_dim=8,
+            hidden_dim=8,
+            r=2,
+            num_embeddings=4,
+            group_specs=[(8, 12, 2), (8, 6, 2)],
+        )
+        outputs = model(torch.tensor([0, 1]))
+
+        assert outputs[0][0].shape == (2, 2, 2, 8)
+        assert outputs[0][1].shape == (2, 2, 12, 2)
+        assert outputs[1][0].shape == (2, 2, 2, 8)
+        assert outputs[1][1].shape == (2, 2, 6, 2)
 
 
 class TestUtils:

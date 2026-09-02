@@ -1,4 +1,5 @@
 import logging
+from typing import Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -17,10 +18,16 @@ class HyperNetworkV2(nn.Module):
         r: int,
         num_embeddings: int,
         num_modules: int,
+        speaker_emb: Optional[nn.Embedding] = None,
     ):
         super().__init__()
         self.context_emb = nn.Embedding(num_modules, context_dim)
-        self.speaker_emb = nn.Embedding(num_embeddings, speaker_dim)
+        if speaker_emb is None:
+            self.speaker_emb = nn.Embedding(num_embeddings, speaker_dim)
+        else:
+            # Keep one annotator embedding table when several shape-specific
+            # hypernetworks are composed together.
+            self.speaker_emb = speaker_emb
 
         # Register buffer for module indices to avoid repeated allocation
         self.register_buffer(
@@ -77,3 +84,36 @@ class HyperNetworkV2(nn.Module):
             )
 
         return A_flat, B_flat
+
+
+class HyperNetworkCollection(nn.Module):
+    """Shape-specific hypernetworks sharing one annotator embedding table."""
+
+    def __init__(
+        self,
+        speaker_dim: int,
+        context_dim: int,
+        hidden_dim: int,
+        r: int,
+        num_embeddings: int,
+        group_specs: Sequence[Tuple[int, int, int]],
+    ):
+        super().__init__()
+        self.speaker_emb = nn.Embedding(num_embeddings, speaker_dim)
+        self.hypernets = nn.ModuleList(
+            HyperNetworkV2(
+                speaker_dim,
+                context_dim,
+                hidden_dim,
+                in_dim,
+                out_dim,
+                r,
+                num_embeddings,
+                num_modules,
+                speaker_emb=self.speaker_emb,
+            )
+            for in_dim, out_dim, num_modules in group_specs
+        )
+
+    def forward(self, HN_ids: torch.Tensor):
+        return [hypernet(HN_ids) for hypernet in self.hypernets]
